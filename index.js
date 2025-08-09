@@ -4,14 +4,19 @@ const express = require("express");
 const cors = require("cors");
 const app = express();
 const port = process.env.PORT || 3000;
-const admin = require("firebase-admin");
-import nodemailer from "nodemailer";
-import crypto from "crypto";
+// const admin = require("firebase-admin");
+const nodemailer = require("nodemailer");
+// const crypto = require("crypto");
 
-app.use(cors());
+app.use(
+  cors({
+    origin: `${process.env.CLIENT_URL}`, 
+    credentials: true, 
+  })
+);
 app.use(express.json());
 
-let otpStore = {};
+const otpStore = new Map();
 
 app.get("/", (req, res) => {
   res.send("Learn and Fun is running..");
@@ -21,10 +26,10 @@ app.listen(port, () => {
   console.log(`Example app listening on port ${port}`);
 });
 
-const decoded = Buffer.from(process.env.FB_SERVICE_KEY, "base64").toString(
-  "utf8"
-);
-const serviceAccount = JSON.parse(decoded);
+// const decoded = Buffer.from(process.env.FB_SERVICE_KEY, "base64").toString(
+//   "utf8"
+// );
+// const serviceAccount = JSON.parse(decoded);
 
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASSWORD}@cluster0.hlucnuf.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0`;
 
@@ -36,32 +41,132 @@ const client = new MongoClient(uri, {
   },
 });
 
+// Create Database
+const usersCollection = client.db("learnNfunDB").collection("users");
+
 // firebase.js
-admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount),
-});
+// admin.initializeApp({
+//   credential: admin.credential.cert(serviceAccount),
+// });
 
-const verifyAccessToken = async (req, res, next) => {
-  const authHeader = req.headers.authorization;
+// const verifyAccessToken = async (req, res, next) => {
+//   const authHeader = req.headers.authorization;
 
-  if (!authHeader?.startsWith("Bearer ")) {
-    return res.status(401).json({ message: "Unauthorized" });
-  }
+//   if (!authHeader?.startsWith("Bearer ")) {
+//     return res.status(401).json({ message: "Unauthorized" });
+//   }
 
-  const idToken = authHeader.split(" ")[1];
+//   const idToken = authHeader.split(" ")[1];
+
+//   try {
+//     const decodedToken = await admin.auth().verifyIdToken(idToken);
+//     req.user = decodedToken;
+//     next();
+//   } catch (error) {
+//     return res.status(403).json({ message: "Invalid or expired token" });
+//   }
+// };
+
+// const verifyTokenEmail = (req, res, next) => {
+//   if (req.query.email !== req.user.email) {
+//     return res.status(403).json({ message: "Forbidden access" });
+//   }
+//   next();
+// };
+
+// Nodemailer otp sending..
+
+app.post("/send-otp", async (req, res) => {
+  const { email } = req.body;
+  if (!email)
+    return res.status(400).json({ success: false, message: "Email required" });
+
+  // Generate 6-digit OTP
+  const otp = Math.floor(100000 + Math.random() * 900000).toString();
+
+  // Setup Nodemailer transporter (example with Gmail SMTP)
+  const transporter = nodemailer.createTransport({
+    service: "gmail",
+    auth: {
+      user: process.env.EMAIL_USER, 
+      pass: process.env.EMAIL_PASS,
+    },
+  });
+
+  const mailOptions = {
+    from: process.env.EMAIL_USER,
+    to: email,
+    subject: "Your OTP Code",
+    text: `Your OTP for registration is: ${otp}. It will expire in 5 minutes.`,
+  };
 
   try {
-    const decodedToken = await admin.auth().verifyIdToken(idToken);
-    req.user = decodedToken;
-    next();
-  } catch (error) {
-    return res.status(403).json({ message: "Invalid or expired token" });
-  }
-};
+    await transporter.sendMail(mailOptions);
 
-const verifyTokenEmail = (req, res, next) => {
-  if (req.query.email !== req.user.email) {
-    return res.status(403).json({ message: "Forbidden access" });
+    // Save OTP with expiration (store in memory for demo)
+    otpStore.set(email, { otp, expiresAt: Date.now() + 10 * 60 * 1000 });
+
+    res.json({ success: true, otp }); // send OTP for demo, remove in prod!
+  } catch (error) {
+    console.error("Error sending email:", error);
+    res.status(500).json({ success: false, message: "Failed to send OTP" });
+  }
+});
+
+// Optional: API to verify OTP on backend (better than frontend compare)
+app.post("/verify-otp", (req, res) => {
+  const { email, otp } = req.body;
+  const record = otpStore.get(email);
+
+  if (!record)
+    return res.status(400).json({ success: false, message: "No OTP sent" });
+  if (record.expiresAt < Date.now()) {
+    otpStore.delete(email);
+    return res.status(400).json({ success: false, message: "OTP expired" });
+  }
+
+  if (record.otp !== otp) {
+    return res.status(400).json({ success: false, message: "Invalid OTP" });
+  }
+
+  otpStore.delete(email); // OTP used, remove it
+  res.json({ success: true, message: "OTP verified" });
+});
+
+// JWT token verify
+const jwt = require("jsonwebtoken");
+
+const verifyToken = (req, res, next) => {
+  const authHeader = req.headers.authorization;
+
+  if (!authHeader)
+    return res.status(401).send({ error: "Unauthorized access" });
+
+  const token = authHeader.split(" ")[1];
+  // console.log("JWT token:", token);
+
+  jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
+    if (err) return res.status(403).send({ error: "Forbidden" });
+    req.user = decoded;
+    next();
+  });
+};
+// your JWT secret
+const jwtSecret = process.env.JWT_SECRET;
+
+// Create a token and send it to client
+app.post("/jwt", (req, res) => {
+  const user = req.body;
+  const token = jwt.sign(user, jwtSecret, { expiresIn: "20d" });
+  res.send({ token });
+});
+
+// Middleware to verify admin
+const verifyAdmin = async (req, res, next) => {
+  const userEmail = req.user.email;
+  const user = await usersCollection.findOne({ email: userEmail });
+  if (!user || user.role !== "admin") {
+    return res.status(403).send({ error: "Forbidden - Admins only" });
   }
   next();
 };
@@ -71,51 +176,78 @@ async function run() {
     // Connect the client to the server	(optional starting in v4.7)
     // await client.connect();
 
-    app.post("/send-otp", async (req, res) => {
-      const { email } = req.body;
-      if (!email)
-        return res
-          .status(400)
-          .json({ success: false, message: "Email required" });
+    // Add users
+    app.post("/users", async (req, res) => {
+      const user = req.body;
+      if (!user.email)
+        return res.status(400).send({ error: "Email is required" });
 
-      const otp = crypto.randomInt(100000, 999999).toString();
-      otpStore[email] = { otp, expires: Date.now() + 5 * 60 * 1000 };
+      const usersCollection = client.db("learnNfunDB").collection("users");
+      const existingUser = await usersCollection.findOne({ email: user.email });
 
-      const transporter = nodemailer.createTransport({
-        service: "Gmail",
-        auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS },
+      if (existingUser) {
+        // User already exists → just return token
+        const token = jwt.sign({ email: user.email }, jwtSecret, {
+          expiresIn: "20d",
+        });
+        return res.status(200).send({ message: "User already exists", token });
+      }
+
+      // New user → insert and return token
+      const result = await usersCollection.insertOne(user);
+      const token = jwt.sign({ email: user.email }, jwtSecret, {
+        expiresIn: "20d",
       });
-
-      await transporter.sendMail({
-        from: process.env.EMAIL_USER,
-        to: email,
-        subject: "Your OTP Code",
-        text: `Your verification code is ${otp}. It expires in 5 minutes.`,
-      });
-
-      res.json({ success: true, message: "OTP sent to email" });
+      res.status(201).send({ result, token });
     });
 
-    app.post("/verify-otp", (req, res) => {
-      const { email, otp } = req.body;
-      const record = otpStore[email];
+    // app.post("/send-otp", async (req, res) => {
+    //   const { email } = req.body;
+    //   if (!email)
+    //     return res
+    //       .status(400)
+    //       .json({ success: false, message: "Email required" });
 
-      if (!record)
-        return res.status(400).json({ success: false, message: "No OTP sent" });
-      if (record.expires < Date.now())
-        return res.status(400).json({ success: false, message: "OTP expired" });
-      if (record.otp !== otp)
-        return res.status(400).json({ success: false, message: "Invalid OTP" });
+    //   const otp = crypto.randomInt(100000, 999999).toString();
+    //   otpStore[email] = { otp, expires: Date.now() + 5 * 60 * 1000 };
 
-      delete otpStore[email];
-      res.json({ success: true });
-    });
+    //   const transporter = nodemailer.createTransport({
+    //     service: "Gmail",
+    //     auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS },
+    //   });
+
+    //   await transporter.sendMail({
+    //     from: process.env.EMAIL_USER,
+    //     to: email,
+    //     subject: "Your OTP Code",
+    //     text: `Your verification code is ${otp}. It will expire in 5 minutes.`,
+    //   });
+
+    //   res.json({ success: true, message: "OTP sent to email" });
+    // });
+
+    // app.post("/verify-otp", async (req, res) => {
+    //   const { email, otp } = req.body;
+    //   const record = otpStore[email];
+
+    //   if (!record)
+    //     return res.status(400).json({ success: false, message: "No OTP sent" });
+    //   if (record.expires < Date.now())
+    //     return res.status(400).json({ success: false, message: "OTP expired" });
+    //   if (record.otp !== otp)
+    //     return res.status(400).json({ success: false, message: "Invalid OTP" });
+
+    //   delete otpStore[email];
+    //   await usersCollection.updateOne({ email }, { $set: { verified: true } });
+
+    //   res.json({ success: true, message: "Email verified successfully" });
+    // });
 
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
-    // console.log(
+    console.log(
       "Pinged your deployment. You successfully connected to MongoDB!"
-    // );
+    );
   } finally {
     // Ensures that the client will close when you finish/error
     // await client.close();
