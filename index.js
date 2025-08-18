@@ -96,8 +96,8 @@ app.post("/send-otp", async (req, res) => {
   const mailOptions = {
     from: process.env.EMAIL_USER,
     to: email,
-    subject: "Your OTP Code",
-    text: `Your OTP for registration is: ${otp}. It will expire in 5 minutes.`,
+    subject: "OTP Code",
+    text: `Your OTP is: ${otp}. It will expire in 5 minutes.`,
   };
 
   try {
@@ -201,7 +201,6 @@ async function run() {
     //   res.status(201).send({ result, token });
     // });
 
-
     // for missing users referal code and link setup
     async function addMissingReferralCodes() {
       const usersWithoutCode = await usersCollection
@@ -228,36 +227,45 @@ async function run() {
       if (!email) return res.status(400).send({ error: "Email is required" });
 
       const usersCollection = client.db("learnNfunDB").collection("users");
-      const existingUser = await usersCollection.findOne({ email });
 
+      // Check if user already exists
+      const existingUser = await usersCollection.findOne({ email });
       if (existingUser) {
         const token = jwt.sign({ email }, jwtSecret, { expiresIn: "20d" });
         return res.status(200).send({ message: "User already exists", token });
       }
 
+      // Generate new referral code
       const referralCode = generateReferralCode();
 
+      // New user object
       const newUser = {
         name,
         email,
         referralCode,
-        referredBy: referredBy || null,
+        referredBy: referredBy || null, // store inviter's referralCode here
         teamMembers: [],
         createdAt: new Date(),
       };
 
       // Insert user
-      await usersCollection.insertOne(newUser);
+      const result = await usersCollection.insertOne(newUser);
 
-      // If referred by someone, update that person's teamMembers
+      // If referredBy exists, update inviter’s teamMembers with THIS USER’s _id
       if (referredBy) {
-        await usersCollection.updateOne(
-          { referralCode: referredBy },
-          { $push: { teamMembers: referralCode } }
-        );
+        const inviter = await usersCollection.findOne({
+          referralCode: referredBy,
+        });
+        if (inviter) {
+          await usersCollection.updateOne(
+            { referralCode: referredBy },
+            { $push: { teamMembers: result.insertedId } }
+          );
+        }
       }
 
       const token = jwt.sign({ email }, jwtSecret, { expiresIn: "20d" });
+
       res.status(201).send({
         message: "User registered successfully",
         referralLink: `${process.env.CLIENT_URL}/auth/signup?ref=${referralCode}`,
@@ -278,32 +286,41 @@ async function run() {
       }
       res.json({ role: user.role || "user" });
     });
-    
 
     // get user profile
     app.get("/my-profile", verifyToken, async (req, res) => {
       const email = req.user.email;
       const user = await usersCollection.findOne({ email });
 
-      if (!user) {
-        return res.status(404).send({ error: "User not found" });
-      }
+      if (!user) return res.status(404).send({ error: "User not found" });
 
+      // Ensure referralCode exists
       if (!user.referralCode) {
         const referralCode = generateReferralCode();
         await usersCollection.updateOne({ email }, { $set: { referralCode } });
         user.referralCode = referralCode;
       }
 
-      // Remove sensitive fields before sending if needed
+      // Populate referrer details if referredBy exists
+      let referrer = null;
+      if (user.referredBy) {
+        referrer = await usersCollection.findOne(
+          { referralCode: user.referredBy },
+          { projection: { name: 1, email: 1, _id: 0 } }
+        );
+      }
+
+      // Remove sensitive info
       delete user.password;
       delete user._id;
 
-      res.send(user);
+      res.send({
+        ...user,
+        referrer, // send referrer info
+      });
     });
 
     // get team data
-
     app.get("/my-team", verifyToken, async (req, res) => {
       try {
         const email = req.user.email;
@@ -312,18 +329,17 @@ async function run() {
         const user = await usersCollection.findOne({ email });
         if (!user) return res.status(404).send({ error: "User not found" });
 
-        // Defensive check: teamMembers must be an array
         const teamMembers = Array.isArray(user.teamMembers)
           ? user.teamMembers
           : [];
 
         if (teamMembers.length === 0) {
-          // No team members → send empty array
           return res.send({ team: [] });
         }
 
+        // Now teamMembers are ObjectIds
         const team = await usersCollection
-          .find({ referralCode: { $in: teamMembers } })
+          .find({ _id: { $in: teamMembers } })
           .project({ name: 1, email: 1, _id: 0 })
           .toArray();
 
