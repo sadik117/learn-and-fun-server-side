@@ -223,7 +223,7 @@ async function run() {
 
     // signup user with reffer
     app.post("/users", async (req, res) => {
-      const { email, name, referredBy } = req.body;
+      const { email, name, phone, referredBy } = req.body;
       if (!email) return res.status(400).send({ error: "Email is required" });
 
       const usersCollection = client.db("learnNfunDB").collection("users");
@@ -242,6 +242,8 @@ async function run() {
       const newUser = {
         name,
         email,
+        role: "user",
+        phone,
         referralCode,
         referredBy: referredBy || null, // store inviter's referralCode here
         teamMembers: [],
@@ -273,8 +275,15 @@ async function run() {
       });
     });
 
-    // get user role
+    // Rollback route
+    app.delete("/users/:email", async (req, res) => {
+      const { email } = req.params;
+      const usersCollection = client.db("learnNfunDB").collection("users");
+      await usersCollection.deleteOne({ email });
+      res.send({ message: "User rolled back successfully" });
+    });
 
+    // get user role
     app.get("/users/:email/role", async (req, res) => {
       const email = req.params.email;
       const user = await usersCollection.findOne(
@@ -349,6 +358,124 @@ async function run() {
         res.status(500).send({ error: "Internal Server Error" });
       }
     });
+
+    // GET all users with role "user" (pending)
+    app.get("/pending-users", verifyToken, verifyAdmin, async (req, res) => {
+      try {
+        const users = await usersCollection
+          .find({ role: "user" }) // only initial users
+          .project({ name: 1, email: 1, _id: 0 })
+          .toArray();
+        res.send(users);
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ error: "Failed to fetch pending users" });
+      }
+    });
+
+    // PATCH to set role to "member"
+    app.patch(
+      "/pending-users/:email/approve",
+      verifyToken,
+      verifyAdmin,
+      async (req, res) => {
+        const { email } = req.params;
+        try {
+          const result = await usersCollection.updateOne(
+            { email },
+            { $set: { role: "member" } }
+          );
+          if (result.modifiedCount > 0) {
+            res.send({ success: true, message: "User promoted to member" });
+          } else {
+            res
+              .status(400)
+              .send({ success: false, message: "Failed to update role" });
+          }
+        } catch (error) {
+          console.error(error);
+          res.status(500).send({ success: false, message: "Server error" });
+        }
+      }
+    );
+
+    // GET all members
+    app.get("/members", verifyToken, verifyAdmin, async (req, res) => {
+      try {
+        const members = await usersCollection
+          .find({ role: "member" })
+          .project({ name: 1, email: 1, _id: 0, photoURL: 1, phone: 1 })
+          .toArray();
+        res.send(members);
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ error: "Failed to fetch members" });
+      }
+    });
+
+    // GET single member profile by email
+    // Get full member profile by email (Admin)
+    app.get(
+      "/members/profile/:email",
+      verifyToken,
+      verifyAdmin,
+      async (req, res) => {
+        const { email } = req.params;
+
+        try {
+          const member = await usersCollection.findOne({
+            email,
+            role: "member",
+          });
+          if (!member)
+            return res.status(404).send({ error: "Member not found" });
+
+          // Ensure referralCode exists
+          if (!member.referralCode) {
+            const referralCode = generateReferralCode();
+            await usersCollection.updateOne(
+              { email },
+              { $set: { referralCode } }
+            );
+            member.referralCode = referralCode;
+          }
+
+          // Populate referrer details if referredBy exists
+          let referrer = null;
+          if (member.referredBy) {
+            referrer = await usersCollection.findOne(
+              { referralCode: member.referredBy },
+              { projection: { name: 1, email: 1, _id: 0 } }
+            );
+          }
+
+          // Populate team members
+          let team = [];
+          if (
+            Array.isArray(member.teamMembers) &&
+            member.teamMembers.length > 0
+          ) {
+            team = await usersCollection
+              .find({ _id: { $in: member.teamMembers } })
+              .project({ name: 1, email: 1, _id: 0 })
+              .toArray();
+          }
+
+          // Remove sensitive info
+          delete member.password;
+          delete member._id;
+
+          res.send({
+            ...member,
+            referrer, // who referred this member
+            team, // team members details
+          });
+        } catch (error) {
+          console.error(error);
+          res.status(500).send({ error: "Failed to fetch member profile" });
+        }
+      }
+    );
 
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
