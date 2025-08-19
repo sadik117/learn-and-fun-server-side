@@ -43,6 +43,7 @@ const client = new MongoClient(uri, {
 
 // Create Database
 const usersCollection = client.db("learnNfunDB").collection("users");
+const paymentsCollection = client.db("learnNfunDB").collection("payments");
 
 // firebase.js
 // admin.initializeApp({
@@ -157,7 +158,7 @@ const jwtSecret = process.env.JWT_SECRET;
 // Create a token and send it to client
 app.post("/jwt", (req, res) => {
   const user = req.body;
-  const token = jwt.sign(user, jwtSecret, { expiresIn: "20d" });
+  const token = jwt.sign(user, jwtSecret, { expiresIn: "3d" });
   res.send({ token });
 });
 
@@ -225,8 +226,6 @@ async function run() {
     app.post("/users", async (req, res) => {
       const { email, name, phone, referredBy } = req.body;
       if (!email) return res.status(400).send({ error: "Email is required" });
-
-      const usersCollection = client.db("learnNfunDB").collection("users");
 
       // Check if user already exists
       const existingUser = await usersCollection.findOne({ email });
@@ -476,6 +475,77 @@ async function run() {
         }
       }
     );
+
+    // Submit payment info
+    app.post("/payments", verifyToken, async (req, res) => {
+      try {
+        const { name, email, phone, screenshot, status, date } = req.body;
+
+        if (!name || !email || !phone || !screenshot) {
+          return res
+            .status(400)
+            .json({ success: false, message: "All fields are required" });
+        }
+
+        const paymentDoc = {
+          name,
+          email,
+          phone,
+          screenshot, // URL from frontend
+          status: status || "pending", // default status
+          date: date ? new Date(date) : new Date(),
+        };
+
+        const result = await paymentsCollection.insertOne(paymentDoc);
+
+        res.json({
+          success: true,
+          message: "Payment submitted",
+          insertedId: result.insertedId,
+        });
+      } catch (error) {
+        console.error(error);
+        res
+          .status(500)
+          .json({ success: false, message: "Failed to submit payment" });
+      }
+    });
+
+    // get payment info
+    app.get("/payments", verifyToken, verifyAdmin, async (req, res) => {
+      try {
+        const payments = await paymentsCollection.find({}).toArray();
+        res.json(payments);
+      } catch (error) {
+        console.error(error);
+        res
+          .status(500)
+          .json({ success: false, message: "Failed to fetch payments" });
+      }
+    });
+
+    // Update payment status
+    app.patch("/payments/:id", verifyToken, verifyAdmin, async (req, res) => {
+      const { id } = req.params;
+      const { status } = req.body;
+      try {
+        const paymentsCollection = client
+          .db("learnNfunDB")
+          .collection("payments");
+        const result = await paymentsCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: { status } }
+        );
+        if (result.modifiedCount === 1) {
+          res.json({ success: true, message: "Payment status updated" });
+        } else {
+          res.status(400).json({ success: false, message: "Update failed" });
+        }
+      } catch (error) {
+        console.error(error);
+        res.status(500).json({ success: false, message: "Server error" });
+      }
+    });
 
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
