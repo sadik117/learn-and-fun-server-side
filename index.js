@@ -372,7 +372,7 @@ async function run() {
       }
     });
 
-    // PATCH to set role to "member"
+    // PATCH to set role to "member" and initialize lottery fields
     app.patch(
       "/pending-users/:email/approve",
       verifyToken,
@@ -382,10 +382,22 @@ async function run() {
         try {
           const result = await usersCollection.updateOne(
             { email },
-            { $set: { role: "member" } }
+            {
+              $set: {
+                role: "member",
+                freePlaysLeft: 3,
+                playsCount: 0,
+                balance: 800, // starting balance
+                profits: 0
+              },
+            }
           );
+
           if (result.modifiedCount > 0) {
-            res.send({ success: true, message: "User promoted to member" });
+            res.send({
+              success: true,
+              message: "User promoted to member",
+            });
           } else {
             res
               .status(400)
@@ -544,6 +556,77 @@ async function run() {
       } catch (error) {
         console.error(error);
         res.status(500).json({ success: false, message: "Server error" });
+      }
+    });
+
+    // POST /lottery/play
+    app.post("/lottery/play", verifyToken, async (req, res) => {
+      try {
+        const email = req.user.email; // from verifyToken middleware
+        const user = await usersCollection.findOne({ email });
+
+        if (!user) {
+          return res
+            .status(404)
+            .send({ success: false, message: "User not found" });
+        }
+
+        let freePlaysLeft = user.freePlaysLeft || 0;
+        let playsCount = user.playsCount || 0;
+        let balance = user.balance || 0;
+        let profits = user.profits || 0;
+
+        // Check if user can play
+        if (freePlaysLeft <= 0 && balance < 50) {
+          return res.status(400).send({
+            success: false,
+            message: "Not enough free plays or balance to play.",
+          });
+        }
+
+        // Deduct free play or balance
+        if (freePlaysLeft > 0) {
+          freePlaysLeft -= 1;
+        } else {
+          balance -= 50; // deduct cost
+        }
+
+        // Increase plays count
+        playsCount += 1;
+
+        // Winning system: every 3rd play wins 50
+        let win = false;
+        if (playsCount % 3 === 0) {
+          win = true;
+          balance += 50;
+          profits += 50
+        }
+
+        // Update user in DB
+        await usersCollection.updateOne(
+          { email },
+          {
+            $set: {
+              freePlaysLeft,
+              playsCount,
+              balance,
+              profits
+            },
+          }
+        );
+
+        return res.send({
+          success: true,
+          message: win ? "Congrats! You won 50৳ 🎉" : "Better luck next time!",
+          win,
+          freePlaysLeft,
+          playsCount,
+          balance,
+          profits
+        });
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ success: false, message: "Server error" });
       }
     });
 
