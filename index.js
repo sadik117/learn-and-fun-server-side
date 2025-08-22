@@ -44,6 +44,7 @@ const client = new MongoClient(uri, {
 // Create Database
 const usersCollection = client.db("learnNfunDB").collection("users");
 const paymentsCollection = client.db("learnNfunDB").collection("payments");
+const withdrawalsCollection = client.db("learnNfun").collection("withdrawals");
 
 // firebase.js
 // admin.initializeApp({
@@ -388,7 +389,7 @@ async function run() {
                 freePlaysLeft: 3,
                 playsCount: 0,
                 balance: 800, // starting balance
-                profits: 0
+                profits: 0,
               },
             }
           );
@@ -599,7 +600,7 @@ async function run() {
         if (playsCount % 3 === 0) {
           win = true;
           balance += 50;
-          profits += 50
+          profits += 50;
         }
 
         // Update user in DB
@@ -610,7 +611,7 @@ async function run() {
               freePlaysLeft,
               playsCount,
               balance,
-              profits
+              profits,
             },
           }
         );
@@ -622,13 +623,139 @@ async function run() {
           freePlaysLeft,
           playsCount,
           balance,
-          profits
+          profits,
         });
       } catch (error) {
         console.error(error);
         res.status(500).send({ success: false, message: "Server error" });
       }
     });
+
+    // Withdraw request API (member side)
+    app.post("/withdraw", verifyToken, async (req, res) => {
+      try {
+        const email = req.user?.email;
+        const { amount } = req.body;
+
+        if (!email) return res.status(401).json({ message: "Unauthorized" });
+        if (amount <= 0)
+          return res.status(400).json({ message: "Invalid amount" });
+
+        const user = await usersCollection.findOne({ email });
+        if (!user) return res.status(404).json({ message: "User not found" });
+
+        if (user.balance < amount) {
+          return res.status(400).json({ message: "Insufficient balance" });
+        }
+
+        // Store request in withdrawals collection
+        const withdrawalRequest = {
+          userId: user._id,
+          email: user.email,
+          name: user.name,
+          amount,
+          status: "pending", // pending | approved | rejected
+          createdAt: new Date(),
+        };
+
+        await withdrawalsCollection.insertOne(withdrawalRequest);
+
+        res.json({
+          success: true,
+          message: "Withdraw request submitted for admin approval",
+        });
+      } catch (err) {
+        console.error("Withdraw error:", err);
+        res.status(500).json({ message: "Server error" });
+      }
+    });
+
+    app.get("/withdrawals", verifyToken, verifyAdmin, async (req, res) => {
+      try {
+        const withdrawals = await withdrawalsCollection
+          .find()
+          .sort({ createdAt: -1 })
+          .toArray();
+        res.json(withdrawals);
+      } catch (err) {
+        res
+          .status(500)
+          .json({ message: "Failed to fetch withdrawal requests" });
+      }
+    });
+
+    // Approve
+    app.patch(
+      "/withdrawals/:id/approve",
+      verifyToken,
+      verifyAdmin,
+      async (req, res) => {
+        const { id } = req.params;
+
+        try {
+          const withdrawal = await withdrawalsCollection.findOne({
+            _id: new ObjectId(id),
+          });
+          if (!withdrawal)
+            return res.status(404).json({ message: "Request not found" });
+          if (withdrawal.status !== "pending") {
+            return res.status(400).json({ message: "Already processed" });
+          }
+
+          // Deduct balance from user
+          const result = await usersCollection.updateOne(
+            { email: withdrawal.email },
+            { $inc: { balance: -withdrawal.amount } }
+          );
+
+          if (result.modifiedCount > 0) {
+            await withdrawalsCollection.updateOne(
+              { _id: new ObjectId(id) },
+              { $set: { status: "approved", approvedAt: new Date() } }
+            );
+            return res.json({ success: true, message: "Withdrawal approved" });
+          } else {
+            return res
+              .status(400)
+              .json({ message: "Failed to update user balance" });
+          }
+        } catch (err) {
+          console.error(err);
+          res.status(500).json({ message: "Server error" });
+        }
+      }
+    );
+
+    // Reject
+    app.patch(
+      "/withdrawals/:id/reject",
+      verifyToken,
+      verifyAdmin,
+      async (req, res) => {
+        const { id } = req.params;
+
+        try {
+          const withdrawal = await withdrawalsCollection.findOne({
+            _id: new ObjectId(id),
+          });
+          if (!withdrawal)
+            return res.status(404).json({ message: "Request not found" });
+          if (withdrawal.status !== "pending") {
+            return res.status(400).json({ message: "Already processed" });
+          }
+
+          await withdrawalsCollection.updateOne(
+            { _id: new ObjectId(id) },
+            { $set: { status: "rejected", rejectedAt: new Date() } }
+          );
+
+          res.json({ success: true, message: "Withdrawal rejected" });
+        } catch (err) {
+          console.error(err);
+          res.status(500).json({ message: "Server error" });
+        }
+      }
+    );
 
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
