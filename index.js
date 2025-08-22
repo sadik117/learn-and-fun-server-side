@@ -44,7 +44,9 @@ const client = new MongoClient(uri, {
 // Create Database
 const usersCollection = client.db("learnNfunDB").collection("users");
 const paymentsCollection = client.db("learnNfunDB").collection("payments");
-const withdrawalsCollection = client.db("learnNfun").collection("withdrawals");
+const withdrawalsCollection = client
+  .db("learnNfunDB")
+  .collection("withdrawals");
 
 // firebase.js
 // admin.initializeApp({
@@ -373,14 +375,24 @@ async function run() {
       }
     });
 
-    // PATCH to set role to "member" and initialize lottery fields
+    // PATCH to set role to "member" and initialize lottery fields + reward referrer
     app.patch(
       "/pending-users/:email/approve",
       verifyToken,
       verifyAdmin,
       async (req, res) => {
         const { email } = req.params;
+
         try {
+          // Find the user first
+          const user = await usersCollection.findOne({ email });
+          if (!user) {
+            return res
+              .status(404)
+              .send({ success: false, message: "User not found" });
+          }
+
+          // Update this user's role & initial balance
           const result = await usersCollection.updateOne(
             { email },
             {
@@ -393,6 +405,16 @@ async function run() {
               },
             }
           );
+
+          // If the user was referred by someone, reward that referrer
+          if (user.referredBy) {
+            await usersCollection.updateOne(
+              { referralCode: user.referredBy }, // find referrer by referralCode
+              {
+                $inc: { balance: 500, profits: 500 },
+              }
+            );
+          }
 
           if (result.modifiedCount > 0) {
             res.send({
