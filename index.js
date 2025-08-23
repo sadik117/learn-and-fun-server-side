@@ -411,7 +411,7 @@ async function run() {
             await usersCollection.updateOne(
               { referralCode: user.referredBy }, // find referrer by referralCode
               {
-                $inc: { balance: 500, profits: 500 },
+                $inc: { balance: 500, profits: 500, freePlaysLeft: 3 },
               }
             );
           }
@@ -584,74 +584,100 @@ async function run() {
 
     // POST /lottery/play
     app.post("/lottery/play", verifyToken, async (req, res) => {
-      try {
-        const email = req.user.email; // from verifyToken middleware
-        const user = await usersCollection.findOne({ email });
+  try {
+    const email = req.user.email;
+    const user = await usersCollection.findOne({ email });
 
-        if (!user) {
-          return res
-            .status(404)
-            .send({ success: false, message: "User not found" });
-        }
+    if (!user) {
+      return res
+        .status(404)
+        .send({ success: false, message: "User not found" });
+    }
 
-        let freePlaysLeft = user.freePlaysLeft || 0;
-        let playsCount = user.playsCount || 0;
-        let balance = user.balance || 0;
-        let profits = user.profits || 0;
+    let freePlaysLeft = user.freePlaysLeft ?? 0;
+    let playsCount = user.playsCount ?? 0;
+    let balance = user.balance ?? 0;
+    let profits = user.profits ?? 0;
 
-        // Check if user can play
-        if (freePlaysLeft <= 0 && balance < 50) {
-          return res.status(400).send({
-            success: false,
-            message: "Not enough free plays or balance to play.",
-          });
-        }
+    // Not enough balance (and no free plays)
+    if (freePlaysLeft <= 0 && balance < 50) {
+      return res.status(400).send({
+        success: false,
+        message: "Not enough free plays or balance to play.",
+      });
+    }
 
-        // Deduct free play or balance
-        if (freePlaysLeft > 0) {
-          freePlaysLeft -= 1;
-        } else {
-          balance -= 50; // deduct cost
-        }
+    // Track whether this spin consumed a free play or a paid play
+    const usedFreePlay = freePlaysLeft > 0;
 
-        // Increase plays count
-        playsCount += 1;
+    // Deduct cost or free play
+    if (usedFreePlay) {
+      freePlaysLeft -= 1;
+    } else {
+      balance -= 50; // paid spin costs 50 upfront
+    }
 
-        // Winning system: every 3rd play wins 50
-        let win = false;
-        if (playsCount % 3 === 0) {
-          win = true;
-          balance += 50;
-          profits += 50;
-        }
+    playsCount += 1;
 
-        // Update user in DB
-        await usersCollection.updateOne(
-          { email },
-          {
-            $set: {
-              freePlaysLeft,
-              playsCount,
-              balance,
-              profits,
-            },
-          }
-        );
+    // Generate initial slots (will be overridden to diamonds on win)
+    const slotItems = ["🍒", "🍋", "🍇", "🍊", "7️⃣", "⭐", "💎"];
+    const slots = [
+      slotItems[Math.floor(Math.random() * slotItems.length)],
+      slotItems[Math.floor(Math.random() * slotItems.length)],
+      slotItems[Math.floor(Math.random() * slotItems.length)],
+    ];
 
-        return res.send({
-          success: true,
-          message: win ? "Congrats! You won 50৳ 🎉" : "Better luck next time!",
-          win,
-          freePlaysLeft,
-          playsCount,
-          balance,
-          profits,
-        });
-      } catch (error) {
-        console.error(error);
-        res.status(500).send({ success: false, message: "Server error" });
+    // Winning logic: 50% chance OR all 3 same symbols
+    let win = false;
+    if (Math.random() < 0.5 || (slots[0] === slots[1] && slots[1] === slots[2])) {
+      win = true;
+
+      // ✅ Always show 💎💎💎 on win
+      slots[0] = "💎";
+      slots[1] = "💎";
+      slots[2] = "💎";
+
+      // ✅ Prize is 50 taka. If this was a paid spin,
+      // also refund the stake (50) so the net gain is +50.
+      if (usedFreePlay) {
+        balance += 50;      // free play: +50 net
+      } else {
+        balance += 100;     // paid play: refund 50 + prize 50 -> net +50
       }
+
+      // Track “profits” as the prize only (50)
+      profits += 50;
+    }
+
+    // Save user
+    await usersCollection.updateOne(
+      { email },
+      { $set: { freePlaysLeft, playsCount, balance, profits } }
+    );
+
+    // Friendly message
+    const message = win
+      ? usedFreePlay
+        ? "Congrats! You won 50৳ 🎉"    // (free play)
+        : "Congrats! You won 50৳ 🎉"    // (stake refunded + 50৳ prize)
+      : "Better luck next time!";
+
+    return res.send({
+      success: true,
+      message,
+      win,
+      slots,                 // 💎💎💎 on wins
+      freePlaysLeft,
+      playsCount,
+      balance,               
+      profits,
     });
+  } catch (err) {
+    console.error(err);
+    res.status(500).send({ success: false, message: "Server error" });
+  }
+});
+
 
     // Withdraw request API (member side)
     app.post("/withdraw", verifyToken, async (req, res) => {
