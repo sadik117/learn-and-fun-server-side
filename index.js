@@ -47,6 +47,8 @@ const paymentsCollection = client.db("learnNfunDB").collection("payments");
 const withdrawalsCollection = client
   .db("learnNfunDB")
   .collection("withdrawals");
+const coursesCollection = client.db("learnNfunDB").collection("courses");
+const videosCollection = client.db("learnNfunDB").collection("videos");
 
 // firebase.js
 // admin.initializeApp({
@@ -584,100 +586,102 @@ async function run() {
 
     // POST /lottery/play
     app.post("/lottery/play", verifyToken, async (req, res) => {
-  try {
-    const email = req.user.email;
-    const user = await usersCollection.findOne({ email });
+      try {
+        const email = req.user.email;
+        const user = await usersCollection.findOne({ email });
 
-    if (!user) {
-      return res
-        .status(404)
-        .send({ success: false, message: "User not found" });
-    }
+        if (!user) {
+          return res
+            .status(404)
+            .send({ success: false, message: "User not found" });
+        }
 
-    let freePlaysLeft = user.freePlaysLeft ?? 0;
-    let playsCount = user.playsCount ?? 0;
-    let balance = user.balance ?? 0;
-    let profits = user.profits ?? 0;
+        let freePlaysLeft = user.freePlaysLeft ?? 0;
+        let playsCount = user.playsCount ?? 0;
+        let balance = user.balance ?? 0;
+        let profits = user.profits ?? 0;
 
-    // Not enough balance (and no free plays)
-    if (freePlaysLeft <= 0 && balance < 50) {
-      return res.status(400).send({
-        success: false,
-        message: "Not enough free plays or balance to play.",
-      });
-    }
+        // Not enough balance (and no free plays)
+        if (freePlaysLeft <= 0 && balance < 50) {
+          return res.status(400).send({
+            success: false,
+            message: "Not enough free plays or balance to play.",
+          });
+        }
 
-    // Track whether this spin consumed a free play or a paid play
-    const usedFreePlay = freePlaysLeft > 0;
+        // Track whether this spin consumed a free play or a paid play
+        const usedFreePlay = freePlaysLeft > 0;
 
-    // Deduct cost or free play
-    if (usedFreePlay) {
-      freePlaysLeft -= 1;
-    } else {
-      balance -= 50; // paid spin costs 50 upfront
-    }
+        // Deduct cost or free play
+        if (usedFreePlay) {
+          freePlaysLeft -= 1;
+        } else {
+          balance -= 50; // paid spin costs 50 upfront
+        }
 
-    playsCount += 1;
+        playsCount += 1;
 
-    // Generate initial slots (will be overridden to diamonds on win)
-    const slotItems = ["🍒", "🍋", "🍇", "🍊", "7️⃣", "⭐", "💎"];
-    const slots = [
-      slotItems[Math.floor(Math.random() * slotItems.length)],
-      slotItems[Math.floor(Math.random() * slotItems.length)],
-      slotItems[Math.floor(Math.random() * slotItems.length)],
-    ];
+        // Generate initial slots (will be overridden to diamonds on win)
+        const slotItems = ["🍒", "🍋", "🍇", "🍊", "7️⃣", "⭐", "💎"];
+        const slots = [
+          slotItems[Math.floor(Math.random() * slotItems.length)],
+          slotItems[Math.floor(Math.random() * slotItems.length)],
+          slotItems[Math.floor(Math.random() * slotItems.length)],
+        ];
 
-    // Winning logic: 50% chance OR all 3 same symbols
-    let win = false;
-    if (Math.random() < 0.5 || (slots[0] === slots[1] && slots[1] === slots[2])) {
-      win = true;
+        // Winning logic: 45% chance OR all 3 same symbols
+        let win = false;
+        if (
+          Math.random() < 0.45 ||
+          (slots[0] === slots[1] && slots[1] === slots[2])
+        ) {
+          win = true;
 
-      // ✅ Always show 💎💎💎 on win
-      slots[0] = "💎";
-      slots[1] = "💎";
-      slots[2] = "💎";
+          // Always show 💎💎💎 on win
+          slots[0] = "💎";
+          slots[1] = "💎";
+          slots[2] = "💎";
 
-      // ✅ Prize is 50 taka. If this was a paid spin,
-      // also refund the stake (50) so the net gain is +50.
-      if (usedFreePlay) {
-        balance += 50;      // free play: +50 net
-      } else {
-        balance += 100;     // paid play: refund 50 + prize 50 -> net +50
+          // Prize is 50 taka. If this was a paid spin,
+          // also refund the stake (50) so the net gain is +50.
+          if (usedFreePlay) {
+            balance += 50; // free play: +50 net
+          } else {
+            balance += 100; // paid play: refund 50 + prize 50 -> net +50
+          }
+
+          // Track “profits” as the prize only (50)
+          profits += 50;
+        }
+
+        // Save user
+        await usersCollection.updateOne(
+          { email },
+          { $set: { freePlaysLeft, playsCount, balance, profits } }
+        );
+
+        // Friendly message
+        const message = win
+          ? usedFreePlay
+            ? "Congrats! You won 50৳ 🎉" // (free play)
+            : "Congrats! You won 50৳ 🎉" // (stake refunded + 50৳ prize)
+          : "Better luck next time!";
+
+        return res.send({
+          success: true,
+          message,
+          win,
+          slots, // 💎💎💎 on wins
+          freePlaysLeft,
+          playsCount,
+          balance,
+          profits,
+        });
+      } catch (err) {
+        console.error(err);
+        res.status(500).send({ success: false, message: "Server error" });
       }
-
-      // Track “profits” as the prize only (50)
-      profits += 50;
-    }
-
-    // Save user
-    await usersCollection.updateOne(
-      { email },
-      { $set: { freePlaysLeft, playsCount, balance, profits } }
-    );
-
-    // Friendly message
-    const message = win
-      ? usedFreePlay
-        ? "Congrats! You won 50৳ 🎉"    // (free play)
-        : "Congrats! You won 50৳ 🎉"    // (stake refunded + 50৳ prize)
-      : "Better luck next time!";
-
-    return res.send({
-      success: true,
-      message,
-      win,
-      slots,                 // 💎💎💎 on wins
-      freePlaysLeft,
-      playsCount,
-      balance,               
-      profits,
     });
-  } catch (err) {
-    console.error(err);
-    res.status(500).send({ success: false, message: "Server error" });
-  }
-});
-
 
     // Withdraw request API (member side)
     app.post("/withdraw", verifyToken, async (req, res) => {
@@ -804,6 +808,186 @@ async function run() {
         }
       }
     );
+
+    // Ensure unique course.key
+    await coursesCollection.createIndex({ key: 1 }, { unique: true });
+
+    /**
+     * PUBLIC (or protected) – list courses
+     */
+    app.get("/courses", async (req, res) => {
+      try {
+        const courses = await coursesCollection
+          .find({})
+          .project({ name: 1, key: 1, createdAt: 1 })
+          .toArray();
+        res.send(courses);
+      } catch (e) {
+        console.error(e);
+        res.status(500).send({ error: "Failed to fetch courses" });
+      }
+    });
+
+    /**
+     * PUBLIC (or protected) – list videos of a course
+     * /videos?courseKey=web-design
+     */
+    app.get("/videos", async (req, res) => {
+      try {
+        const { courseKey } = req.query;
+        if (!courseKey) {
+          return res.status(400).send({ error: "courseKey is required" });
+        }
+        const videos = await videosCollection
+          .find({ courseKey })
+          .project({ title: 1, yt: 1, order: 1, createdAt: 1 })
+          .sort({ order: 1, createdAt: 1 })
+          .toArray();
+        res.send(videos);
+      } catch (e) {
+        console.error(e);
+        res.status(500).send({ error: "Failed to fetch videos" });
+      }
+    });
+
+    /**
+     * ADMIN – create course
+     * body: { key, name }
+     */
+    app.post("/courses", verifyToken, verifyAdmin, async (req, res) => {
+      try {
+        const { key, name } = req.body;
+        if (!key || !name)
+          return res.status(400).send({ error: "key & name required" });
+
+        const doc = { key, name, createdAt: new Date() };
+        const result = await coursesCollection.insertOne(doc);
+        res.send({ success: true, insertedId: result.insertedId });
+      } catch (e) {
+        if (e?.code === 11000) {
+          return res.status(409).send({ error: "Course key already exists" });
+        }
+        console.error(e);
+        res.status(500).send({ error: "Failed to create course" });
+      }
+    });
+
+    /**
+     * ADMIN – update course
+     * params: id
+     * body: { name }
+     */
+    app.patch("/courses/:id", verifyToken, verifyAdmin, async (req, res) => {
+      try {
+        const { id } = req.params;
+        const { name } = req.body;
+        if (!name) return res.status(400).send({ error: "name is required" });
+
+        const result = await coursesCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: { name } }
+        );
+        res.send({ success: result.modifiedCount > 0 });
+      } catch (e) {
+        console.error(e);
+        res.status(500).send({ error: "Failed to update course" });
+      }
+    });
+
+    /**
+     * ADMIN – delete course (also deletes its videos)
+     */
+    app.delete("/courses/:id", verifyToken, verifyAdmin, async (req, res) => {
+      try {
+        const { id } = req.params;
+        const course = await coursesCollection.findOne({
+          _id: new ObjectId(id),
+        });
+        if (!course) return res.status(404).send({ error: "Course not found" });
+
+        await videosCollection.deleteMany({ courseKey: course.key });
+        const result = await coursesCollection.deleteOne({
+          _id: new ObjectId(id),
+        });
+        res.send({ success: result.deletedCount > 0 });
+      } catch (e) {
+        console.error(e);
+        res.status(500).send({ error: "Failed to delete course" });
+      }
+    });
+
+    /**
+     * ADMIN – create video
+     * body: { courseKey, title, yt, order? }
+     */
+    app.post("/videos", verifyToken, verifyAdmin, async (req, res) => {
+      try {
+        const { courseKey, title, yt, order } = req.body;
+        if (!courseKey || !title || !yt) {
+          return res
+            .status(400)
+            .send({ error: "courseKey, title, yt required" });
+        }
+        // ensure course exists
+        const course = await coursesCollection.findOne({ key: courseKey });
+        if (!course) return res.status(404).send({ error: "Course not found" });
+
+        const doc = {
+          courseKey,
+          title,
+          yt,
+          order: typeof order === "number" ? order : 9999,
+          createdAt: new Date(),
+        };
+        const result = await videosCollection.insertOne(doc);
+        res.send({ success: true, insertedId: result.insertedId });
+      } catch (e) {
+        console.error(e);
+        res.status(500).send({ error: "Failed to create video" });
+      }
+    });
+
+    /**
+     * ADMIN – update video
+     * params: id
+     * body: { title?, yt?, order? }
+     */
+    app.patch("/videos/:id", verifyToken, verifyAdmin, async (req, res) => {
+      try {
+        const { id } = req.params;
+        const payload = {};
+        ["title", "yt", "order"].forEach((k) => {
+          if (req.body[k] !== undefined) payload[k] = req.body[k];
+        });
+        if (!Object.keys(payload).length) {
+          return res.status(400).send({ error: "Nothing to update" });
+        }
+        const result = await videosCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: payload }
+        );
+        res.send({ success: result.modifiedCount > 0 });
+      } catch (e) {
+        console.error(e);
+        res.status(500).send({ error: "Failed to update video" });
+      }
+    });
+
+    /**
+     * ADMIN – delete video
+     */
+    app.delete("/videos/:id", verifyToken, verifyAdmin, async (req, res) => {
+      try {
+        const { id } = req.params;
+        const result = await videosCollection.deleteOne({
+          _id: new ObjectId(id),
+        });
+        res.send({ success: result.deletedCount > 0 });
+      } catch (e) {
+        console.error(e);
+        res.status(500).send({ error: "Failed to delete video" });
+      }
+    });
 
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
