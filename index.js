@@ -629,10 +629,10 @@ async function run() {
           slotItems[Math.floor(Math.random() * slotItems.length)],
         ];
 
-        // Winning logic: 45% chance OR all 3 same symbols
+        // Winning logic: 40% chance OR all 3 same symbols
         let win = false;
         if (
-          Math.random() < 0.45 ||
+          Math.random() < 0.4 ||
           (slots[0] === slots[1] && slots[1] === slots[2])
         ) {
           win = true;
