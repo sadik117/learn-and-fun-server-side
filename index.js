@@ -1,5 +1,5 @@
-const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 require("dotenv").config();
+const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const express = require("express");
 const cors = require("cors");
 const app = express();
@@ -8,23 +8,56 @@ const port = process.env.PORT || 3000;
 const nodemailer = require("nodemailer");
 const crypto = require("crypto");
 
-app.use(
-  cors({
-    origin: `${process.env.CLIENT_URL}`,
-    credentials: true,
-  })
-);
+
+// Comma-separated list in env (recommended on Vercel):
+// CLIENT_ORIGINS=https://learnandearned.netlify.app,http://localhost:5173
+const envOrigins = (process.env.CLIENT_ORIGINS || "")
+  .split(",")
+  .map(s => s.trim())
+  .filter(Boolean);
+
+// Safe defaults for local dev + your Netlify domain
+const defaultWhitelist = [
+  "http://localhost:5173",
+  "https://learnandearned.netlify.app",
+];
+
+const whitelist = new Set([...defaultWhitelist, ...envOrigins]);
+
+const corsOptions = {
+  origin: (origin, cb) => {
+    // Allow server-to-server, curl, Postman (no origin header)
+    if (!origin) return cb(null, true);
+
+    // Explicitly allow any origin in the whitelist
+    if (whitelist.has(origin)) return cb(null, true);
+
+    // Optionally allow your preview subdomains on Netlify (uncomment if needed)
+    // if (/^https:\/\/.*--learnandearned\.netlify\.app$/.test(origin)) return cb(null, true);
+
+    return cb(new Error(`Not allowed by CORS: ${origin}`));
+  },
+  credentials: true, // so cookies/Authorization can be sent
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+};
+
+app.use(cors(corsOptions));
+// Handle preflight for all routes
+// app.options("*", cors(corsOptions));
+
+
 app.use(express.json());
 
 const otpStore = new Map();
 
 app.get("/", (req, res) => {
-  res.send("Learn and Fun is running..");
+  res.send("Learn and Earn is running..");
 });
 
-app.listen(port, () => {
-  console.log(`Example app listening on port ${port}`);
-});
+// app.listen(port, () => {
+//   console.log(`Example app listening on port ${port}`);
+// });
 
 // const decoded = Buffer.from(process.env.FB_SERVICE_KEY, "base64").toString(
 //   "utf8"
@@ -180,7 +213,7 @@ const verifyAdmin = async (req, res, next) => {
 async function run() {
   try {
     // Connect the client to the server	(optional starting in v4.7)
-    // await client.connect();
+    await client.connect();
 
     // Add users
     // app.post("/users", async (req, res) => {
@@ -288,17 +321,36 @@ async function run() {
     });
 
     // get user role
-    app.get("/users/:email/role", async (req, res) => {
-      const email = req.params.email;
-      const user = await usersCollection.findOne(
-        { email },
-        { projection: { role: 1 } }
-      );
-      if (!user) {
-        return res.status(404).json({ error: "User not found" });
-      }
-      res.json({ role: user.role || "user" });
-    });
+   // get user role (no auth required; add verifyToken if you want to restrict)
+app.get("/users/:email/role", async (req, res) => {
+  try {
+    // emails can contain '+', '%', etc. — decode safely
+    const raw = req.params.email || "";
+    const email = decodeURIComponent(raw);
+
+    if (!email) {
+      return res.status(400).json({ error: "Email param required" });
+    }
+
+    // Use the existing collection defined above
+    const user = await usersCollection.findOne(
+      { email },
+      { projection: { role: 1, _id: 0 } }
+    );
+
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    // default to "user" if role missing
+    res.json({ role: user.role || "user" });
+  } catch (err) {
+    console.error("GET /users/:email/role error:", err);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+});
+
+
 
     // get user profile
     app.get("/my-profile", verifyToken, async (req, res) => {
@@ -990,13 +1042,14 @@ async function run() {
     });
 
     // Send a ping to confirm a successful connection
-    await client.db("admin").command({ ping: 1 });
-    console.log(
-      "Pinged your deployment. You successfully connected to MongoDB!"
-    );
+    // await client.db("admin").command({ ping: 1 });
+    // console.log(
+    //   "Pinged your deployment. You successfully connected to MongoDB!"
+    // );
   } finally {
     // Ensures that the client will close when you finish/error
     // await client.close();
   }
 }
 run().catch(console.dir);
+module.exports = app;
