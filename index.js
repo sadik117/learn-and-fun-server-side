@@ -55,14 +55,6 @@ app.get("/", (req, res) => {
   res.send("Learn and Earn is running..");
 });
 
-// app.listen(port, () => {
-//   console.log(`Example app listening on port ${port}`);
-// });
-
-// const decoded = Buffer.from(process.env.FB_SERVICE_KEY, "base64").toString(
-//   "utf8"
-// );
-// const serviceAccount = JSON.parse(decoded);
 
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASSWORD}@cluster0.hlucnuf.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0`;
 
@@ -82,36 +74,6 @@ const withdrawalsCollection = client
   .collection("withdrawals");
 const coursesCollection = client.db("learnNfunDB").collection("courses");
 const videosCollection = client.db("learnNfunDB").collection("videos");
-
-// firebase.js
-// admin.initializeApp({
-//   credential: admin.credential.cert(serviceAccount),
-// });
-
-// const verifyAccessToken = async (req, res, next) => {
-//   const authHeader = req.headers.authorization;
-
-//   if (!authHeader?.startsWith("Bearer ")) {
-//     return res.status(401).json({ message: "Unauthorized" });
-//   }
-
-//   const idToken = authHeader.split(" ")[1];
-
-//   try {
-//     const decodedToken = await admin.auth().verifyIdToken(idToken);
-//     req.user = decodedToken;
-//     next();
-//   } catch (error) {
-//     return res.status(403).json({ message: "Invalid or expired token" });
-//   }
-// };
-
-// const verifyTokenEmail = (req, res, next) => {
-//   if (req.query.email !== req.user.email) {
-//     return res.status(403).json({ message: "Forbidden access" });
-//   }
-//   next();
-// };
 
 // Nodemailer otp sending..
 
@@ -215,31 +177,6 @@ async function run() {
     // Connect the client to the server	(optional starting in v4.7)
     await client.connect();
 
-    // Add users
-    // app.post("/users", async (req, res) => {
-    //   const user = req.body;
-    //   if (!user.email)
-    //     return res.status(400).send({ error: "Email is required" });
-
-    //   const usersCollection = client.db("learnNfunDB").collection("users");
-    //   const existingUser = await usersCollection.findOne({ email: user.email });
-
-    //   if (existingUser) {
-    //     // User already exists → just return token
-    //     const token = jwt.sign({ email: user.email }, jwtSecret, {
-    //       expiresIn: "20d",
-    //     });
-    //     return res.status(200).send({ message: "User already exists", token });
-    //   }
-
-    //   // New user → insert and return token
-    //   const result = await usersCollection.insertOne(user);
-    //   const token = jwt.sign({ email: user.email }, jwtSecret, {
-    //     expiresIn: "20d",
-    //   });
-    //   res.status(201).send({ result, token });
-    // });
-
     // for missing users referal code and link setup
     async function addMissingReferralCodes() {
       const usersWithoutCode = await usersCollection
@@ -262,8 +199,11 @@ async function run() {
 
     // signup user with reffer
     app.post("/users", async (req, res) => {
-      const { email, name, phone, referredBy } = req.body;
-      if (!email) return res.status(400).send({ error: "Email is required" });
+      const { email: inputEmail, name, phone, referredBy } = req.body;
+      if (!inputEmail)
+        return res.status(400).send({ error: "Email is required" });
+
+      const email = inputEmail.toString().trim().toLowerCase();
 
       // Check if user already exists
       const existingUser = await usersCollection.findOne({ email });
@@ -320,91 +260,116 @@ async function run() {
       res.send({ message: "User rolled back successfully" });
     });
 
-    // get user role
-   // get user role (no auth required; add verifyToken if you want to restrict)
-app.get("/users/:email/role", async (req, res) => {
-  try {
-    // emails can contain '+', '%', etc. — decode safely
-    const raw = req.params.email || "";
-    const email = decodeURIComponent(raw);
+    // get user role (path version)
+    app.get("/users/:email/role", async (req, res) => {
+      try {
+        const raw = req.params.email || "";
+        const email = decodeURIComponent(raw).trim().toLowerCase();
 
-    if (!email) {
-      return res.status(400).json({ error: "Email param required" });
-    }
+        if (!email) return res.status(400).json({ error: "Email required" });
 
-    // Use the existing collection defined above
-    const user = await usersCollection.findOne(
-      { email },
-      { projection: { role: 1, _id: 0 } }
-    );
+        const user = await usersCollection.findOne(
+          { email },
+          { projection: { role: 1, _id: 0 } }
+        );
 
-    if (!user) {
-      return res.status(404).json({ error: "User not found" });
-    }
+        // Return a safe default to avoid client error loops
+        if (!user) return res.json({ role: "user" });
 
-    // default to "user" if role missing
-    res.json({ role: user.role || "user" });
-  } catch (err) {
-    console.error("GET /users/:email/role error:", err);
-    res.status(500).json({ error: "Internal Server Error" });
-  }
-});
+        res.json({ role: user.role || "user" });
+      } catch (err) {
+        console.error("GET /users/:email/role error:", err);
+        res.status(500).json({ error: "Internal Server Error" });
+      }
+    });
 
+    // get user role (query alias)
+    app.get("/users/role", async (req, res) => {
+      try {
+        const raw = (req.query.email || "").toString();
+        const email = decodeURIComponent(raw).trim().toLowerCase();
 
+        if (!email) return res.status(400).json({ error: "Email required" });
+
+        const user = await usersCollection.findOne(
+          { email },
+          { projection: { role: 1, _id: 0 } }
+        );
+        if (!user) return res.json({ role: "user" });
+
+        res.json({ role: user.role || "user" });
+      } catch (err) {
+        console.error("GET /users/role error:", err);
+        res.status(500).json({ error: "Internal Server Error" });
+      }
+    });
 
     // get user profile
     app.get("/my-profile", verifyToken, async (req, res) => {
-      const email = req.user.email;
-      const user = await usersCollection.findOne({ email });
+      try {
+        const email = (req.user?.email || "").trim().toLowerCase();
+        if (!email) return res.status(400).send({ error: "Email missing in token" });
 
-      if (!user) return res.status(404).send({ error: "User not found" });
+        const user = await usersCollection.findOne({ email });
+        if (!user) return res.status(404).send({ error: "User not found" });
 
-      // Ensure referralCode exists
-      if (!user.referralCode) {
-        const referralCode = generateReferralCode();
-        await usersCollection.updateOne({ email }, { $set: { referralCode } });
-        user.referralCode = referralCode;
+        // Ensure referralCode exists (generate once if missing)
+        let ensuredReferralCode = user.referralCode;
+        if (!ensuredReferralCode) {
+          ensuredReferralCode = generateReferralCode();
+          await usersCollection.updateOne(
+            { email },
+            { $set: { referralCode: ensuredReferralCode } }
+          );
+        }
+
+        // Populate referrer details if referredBy exists
+        let referrer = null;
+        if (user.referredBy) {
+          referrer = await usersCollection.findOne(
+            { referralCode: user.referredBy },
+            { projection: { name: 1, email: 1, _id: 0 } }
+          );
+        }
+
+        // Build a safe response (avoid mutating DB doc)
+        const { password, _id, ...rest } = user;
+
+        res.send({
+          ...rest,
+          referralCode: ensuredReferralCode,
+          referrer,
+        });
+      } catch (err) {
+        console.error("GET /my-profile error:", err);
+        res.status(500).send({ error: "Internal Server Error" });
       }
-
-      // Populate referrer details if referredBy exists
-      let referrer = null;
-      if (user.referredBy) {
-        referrer = await usersCollection.findOne(
-          { referralCode: user.referredBy },
-          { projection: { name: 1, email: 1, _id: 0 } }
-        );
-      }
-
-      // Remove sensitive info
-      delete user.password;
-      delete user._id;
-
-      res.send({
-        ...user,
-        referrer, // send referrer info
-      });
     });
 
     // get team data
     app.get("/my-team", verifyToken, async (req, res) => {
       try {
-        const email = req.user.email;
+        const email = (req.user?.email || "").trim().toLowerCase();
         const usersCollection = client.db("learnNfunDB").collection("users");
 
         const user = await usersCollection.findOne({ email });
         if (!user) return res.status(404).send({ error: "User not found" });
 
-        const teamMembers = Array.isArray(user.teamMembers)
-          ? user.teamMembers
-          : [];
+        const rawMembers = Array.isArray(user.teamMembers) ? user.teamMembers : [];
+        // Normalize to ObjectId[] safely
+        const toObjectId = (v) => {
+          try {
+            return typeof v === "string" ? new ObjectId(v) : v;
+          } catch (_) {
+            return null;
+          }
+        };
+        const memberIds = rawMembers.map(toObjectId).filter(Boolean);
 
-        if (teamMembers.length === 0) {
-          return res.send({ team: [] });
-        }
+        if (!memberIds.length) return res.send({ team: [] });
 
-        // Now teamMembers are ObjectIds
         const team = await usersCollection
-          .find({ _id: { $in: teamMembers } })
+          .find({ _id: { $in: memberIds } })
           .project({ name: 1, email: 1, _id: 0 })
           .toArray();
 
