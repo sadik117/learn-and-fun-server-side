@@ -283,11 +283,11 @@ async function run() {
       }
     });
 
-    // get user role (query alias)
-    app.get("/users/role", async (req, res) => {
-      try {
-        const raw = (req.query.email || "").toString();
-        const email = decodeURIComponent(raw).trim().toLowerCase();
+// get user role (query alias)
+app.get("/users/role", async (req, res) => {
+  try {
+    const raw = (req.query.email || "").toString();
+    const email = decodeURIComponent(raw).trim().toLowerCase();
 
         if (!email) return res.status(400).json({ error: "Email required" });
 
@@ -300,9 +300,30 @@ async function run() {
         res.json({ role: user.role || "user" });
       } catch (err) {
         console.error("GET /users/role error:", err);
-        res.status(500).json({ error: "Internal Server Error" });
-      }
-    });
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+});
+
+// get user role (path alias to avoid client changes)
+app.get("/users/role/:email", async (req, res) => {
+  try {
+    const raw = req.params.email || "";
+    const email = decodeURIComponent(raw).trim().toLowerCase();
+
+    if (!email) return res.status(400).json({ error: "Email required" });
+
+    const user = await usersCollection.findOne(
+      { email },
+      { projection: { role: 1, _id: 0 } }
+    );
+    if (!user) return res.json({ role: "user" });
+
+    res.json({ role: user.role || "user" });
+  } catch (err) {
+    console.error("GET /users/role/:email error:", err);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+});
 
     // get user profile
     app.get("/my-profile", verifyToken, async (req, res) => {
