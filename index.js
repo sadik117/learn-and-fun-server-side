@@ -8,12 +8,11 @@ const port = process.env.PORT || 3000;
 const nodemailer = require("nodemailer");
 const crypto = require("crypto");
 
-
 // Comma-separated list in env (recommended on Vercel):
 // CLIENT_ORIGINS=https://learnandearned.netlify.app,http://localhost:5173
 const envOrigins = (process.env.CLIENT_ORIGINS || "")
   .split(",")
-  .map(s => s.trim())
+  .map((s) => s.trim())
   .filter(Boolean);
 
 // Safe defaults for local dev + your Netlify domain
@@ -46,7 +45,6 @@ app.use(cors(corsOptions));
 // Handle preflight for all routes
 // app.options("*", cors(corsOptions));
 
-
 app.use(express.json());
 
 const otpStore = new Map();
@@ -54,7 +52,6 @@ const otpStore = new Map();
 app.get("/", (req, res) => {
   res.send("Learn and Earn is running..");
 });
-
 
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASSWORD}@cluster0.hlucnuf.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0`;
 
@@ -260,34 +257,34 @@ async function run() {
       res.send({ message: "User rolled back successfully" });
     });
 
-    // get user role (path version)
-    app.get("/users/:email/role", async (req, res) => {
+    // // get user role (path version)
+    // app.get("/users/:email/role", async (req, res) => {
+    //   try {
+    //     const raw = req.params.email || "";
+    //     const email = decodeURIComponent(raw).trim().toLowerCase();
+
+    //     if (!email) return res.status(400).json({ error: "Email required" });
+
+    //     const user = await usersCollection.findOne(
+    //       { email },
+    //       { projection: { role: 1, _id: 0 } }
+    //     );
+
+    //     // Return a safe default to avoid client error loops
+    //     if (!user) return res.json({ role: "user" });
+
+    //     res.json({ role: user.role || "user" });
+    //   } catch (err) {
+    //     console.error("GET /users/:email/role error:", err);
+    //     res.status(500).json({ error: "Internal Server Error" });
+    //   }
+    // });
+
+    // get user role (query alias)
+    app.get("/users/role", async (req, res) => {
       try {
-        const raw = req.params.email || "";
+        const raw = (req.query.email || "").toString();
         const email = decodeURIComponent(raw).trim().toLowerCase();
-
-        if (!email) return res.status(400).json({ error: "Email required" });
-
-        const user = await usersCollection.findOne(
-          { email },
-          { projection: { role: 1, _id: 0 } }
-        );
-
-        // Return a safe default to avoid client error loops
-        if (!user) return res.json({ role: "user" });
-
-        res.json({ role: user.role || "user" });
-      } catch (err) {
-        console.error("GET /users/:email/role error:", err);
-        res.status(500).json({ error: "Internal Server Error" });
-      }
-    });
-
-// get user role (query alias)
-app.get("/users/role", async (req, res) => {
-  try {
-    const raw = (req.query.email || "").toString();
-    const email = decodeURIComponent(raw).trim().toLowerCase();
 
         if (!email) return res.status(400).json({ error: "Email required" });
 
@@ -300,36 +297,37 @@ app.get("/users/role", async (req, res) => {
         res.json({ role: user.role || "user" });
       } catch (err) {
         console.error("GET /users/role error:", err);
-    res.status(500).json({ error: "Internal Server Error" });
-  }
-});
+        res.status(500).json({ error: "Internal Server Error" });
+      }
+    });
 
-// get user role (path alias to avoid client changes)
-app.get("/users/role/:email", async (req, res) => {
-  try {
-    const raw = req.params.email || "";
-    const email = decodeURIComponent(raw).trim().toLowerCase();
+    // get user role (path alias to avoid client changes)
+    app.get("/users/role/:email", async (req, res) => {
+      try {
+        const raw = req.params.email || "";
+        const email = decodeURIComponent(raw).trim().toLowerCase();
 
-    if (!email) return res.status(400).json({ error: "Email required" });
+        if (!email) return res.status(400).json({ error: "Email required" });
 
-    const user = await usersCollection.findOne(
-      { email },
-      { projection: { role: 1, _id: 0 } }
-    );
-    if (!user) return res.json({ role: "user" });
+        const user = await usersCollection.findOne(
+          { email },
+          { projection: { role: 1, _id: 0 } }
+        );
+        if (!user) return res.json({ role: "user" });
 
-    res.json({ role: user.role || "user" });
-  } catch (err) {
-    console.error("GET /users/role/:email error:", err);
-    res.status(500).json({ error: "Internal Server Error" });
-  }
-});
+        res.json({ role: user.role || "user" });
+      } catch (err) {
+        console.error("GET /users/role/:email error:", err);
+        res.status(500).json({ error: "Internal Server Error" });
+      }
+    });
 
     // get user profile
     app.get("/my-profile", verifyToken, async (req, res) => {
       try {
         const email = (req.user?.email || "").trim().toLowerCase();
-        if (!email) return res.status(400).send({ error: "Email missing in token" });
+        if (!email)
+          return res.status(400).send({ error: "Email missing in token" });
 
         const user = await usersCollection.findOne({ email });
         if (!user) return res.status(404).send({ error: "User not found" });
@@ -376,7 +374,9 @@ app.get("/users/role/:email", async (req, res) => {
         const user = await usersCollection.findOne({ email });
         if (!user) return res.status(404).send({ error: "User not found" });
 
-        const rawMembers = Array.isArray(user.teamMembers) ? user.teamMembers : [];
+        const rawMembers = Array.isArray(user.teamMembers)
+          ? user.teamMembers
+          : [];
         // Normalize to ObjectId[] safely
         const toObjectId = (v) => {
           try {
@@ -725,11 +725,21 @@ app.get("/users/role/:email", async (req, res) => {
     app.post("/withdraw", verifyToken, async (req, res) => {
       try {
         const email = req.user?.email;
-        const { amount } = req.body;
+        const { amount, phone, method } = req.body;
 
         if (!email) return res.status(401).json({ message: "Unauthorized" });
         if (amount <= 0)
           return res.status(400).json({ message: "Invalid amount" });
+        if (!phone || phone.length < 11) {
+          return res
+            .status(400)
+            .json({ message: "Valid phone number required" });
+        }
+        if (!method || !["bkash", "nagad"].includes(method.toLowerCase())) {
+          return res
+            .status(400)
+            .json({ message: "Payment method must be bKash or Nagad" });
+        }
 
         const user = await usersCollection.findOne({ email });
         if (!user) return res.status(404).json({ message: "User not found" });
@@ -738,17 +748,26 @@ app.get("/users/role/:email", async (req, res) => {
           return res.status(400).json({ message: "Insufficient balance" });
         }
 
-        // Store request in withdrawals collection
+        // Create withdrawal request object
         const withdrawalRequest = {
           userId: user._id,
           email: user.email,
           name: user.name,
+          phone,
+          method: method.toLowerCase(), // "bkash" or "nagad"
           amount,
           status: "pending", // pending | approved | rejected
           createdAt: new Date(),
         };
 
+        // Store in withdrawals collection
         await withdrawalsCollection.insertOne(withdrawalRequest);
+
+        // (Optional) Deduct balance immediately OR wait for admin approval
+        // await usersCollection.updateOne(
+        //   { _id: user._id },
+        //   { $inc: { balance: -amount } }
+        // );
 
         res.json({
           success: true,
