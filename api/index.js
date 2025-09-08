@@ -1,6 +1,5 @@
-// Vercel serverless entrypoint that wraps the Express app
-// All incoming requests are forwarded to the exported Express instance
+// Vercel serverless entrypoint exporting the Express app directly
+// This preserves the original request URL for proper routing
 const app = require("../index");
 
-module.exports = (req, res) => app(req, res);
-
+module.exports = app;

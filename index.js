@@ -19,6 +19,10 @@ const envOrigins = (process.env.CLIENT_ORIGINS || "")
 const defaultWhitelist = [
   "http://localhost:5173",
   "https://learnandearned.netlify.app",
+  "https://learnandearned.vercel.app",
+  "http://learnandearned.com",
+  "http://www.learnandearned.com",
+  "https://www.learnandearned.xyz"
 ];
 
 const whitelist = new Set([...defaultWhitelist, ...envOrigins]);
@@ -174,7 +178,7 @@ async function run() {
     // Connect the client to the server	(optional starting in v4.7)
     await client.connect();
 
-    // for missing users referal code and link setup
+    // for missing users referral code and link setup
     async function addMissingReferralCodes() {
       const usersWithoutCode = await usersCollection
         .find({ referralCode: { $exists: false } })
@@ -192,6 +196,15 @@ async function run() {
 
     function generateReferralCode() {
       return crypto.randomBytes(4).toString("hex").toUpperCase();
+    }
+
+    // Ensure all existing users have a referralCode, then index it for fast lookups
+    try {
+      await addMissingReferralCodes();
+      // Unique + sparse so missing values (if any) don't break index creation
+      await usersCollection.createIndex({ referralCode: 1 }, { unique: true, sparse: true });
+    } catch (e) {
+      console.warn("Referral code backfill/index warning:", e?.message || e);
     }
 
     // signup user with reffer
@@ -281,46 +294,84 @@ async function run() {
     // });
 
     // get user role (query alias)
-    app.get("/users/role", async (req, res) => {
-      try {
-        const raw = (req.query.email || "").toString();
-        const email = decodeURIComponent(raw).trim().toLowerCase();
+    // get user role (query alias: email OR referralCode)
+app.get("/users/role", async (req, res) => {
+  try {
+    const emailRaw = (req.query.email || "").toString();
+    const codeRaw = (req.query.referralCode || "").toString();
 
-        if (!email) return res.status(400).json({ error: "Email required" });
+    const email = decodeURIComponent(emailRaw).trim().toLowerCase();
+    const referralCode = decodeURIComponent(codeRaw).trim().toUpperCase();
 
-        const user = await usersCollection.findOne(
-          { email },
-          { projection: { role: 1, _id: 0 } }
-        );
-        if (!user) return res.json({ role: "user" });
+    if (!email && !referralCode) {
+      return res.status(400).json({ error: "Provide email or referralCode" });
+    }
 
-        res.json({ role: user.role || "user" });
-      } catch (err) {
-        console.error("GET /users/role error:", err);
-        res.status(500).json({ error: "Internal Server Error" });
-      }
+    // Build the lookup query
+    let query = {};
+    if (email && referralCode) {
+      // If both are provided, ensure they refer to the same record
+      query = { email, referralCode };
+    } else if (email) {
+      query = { email };
+    } else {
+      query = { referralCode };
+    }
+
+    const user = await usersCollection.findOne(query, {
+      projection: { role: 1, _id: 0, email: 1, referralCode: 1 },
     });
+
+    // If both were provided but no single record matches both, check for a mismatch to give a clearer error
+    if (email && referralCode && !user) {
+      // Try to detect which part didn't match to help the client
+      const byEmail = await usersCollection.findOne({ email }, { projection: { _id: 1 } });
+      const byCode = await usersCollection.findOne({ referralCode }, { projection: { _id: 1 } });
+      if (byEmail && byCode) {
+        return res.status(400).json({
+          error: "email and referralCode refer to different users",
+        });
+      }
+    }
+
+    // Default role is "user" if not found
+    const role = user?.role || "user";
+    return res.json({ role });
+  } catch (err) {
+    console.error("GET /users/role error:", err);
+    return res.status(500).json({ error: "Internal Server Error" });
+  }
+});
+
+
 
     // get user role (path alias to avoid client changes)
-    app.get("/users/role/:email", async (req, res) => {
-      try {
-        const raw = req.params.email || "";
-        const email = decodeURIComponent(raw).trim().toLowerCase();
+    // get user role (path alias: /users/role/:identifier where identifier = email OR referralCode)
+app.get("/users/role/:identifier", async (req, res) => {
+  try {
+    const raw = req.params.identifier || "";
+    const id = decodeURIComponent(raw).trim();
 
-        if (!email) return res.status(400).json({ error: "Email required" });
+    if (!id) return res.status(400).json({ error: "Identifier required" });
 
-        const user = await usersCollection.findOne(
-          { email },
-          { projection: { role: 1, _id: 0 } }
-        );
-        if (!user) return res.json({ role: "user" });
+    // Heuristic: if it looks like an email (has '@'), treat as email; otherwise treat as referralCode
+    const isEmail = id.includes("@");
 
-        res.json({ role: user.role || "user" });
-      } catch (err) {
-        console.error("GET /users/role/:email error:", err);
-        res.status(500).json({ error: "Internal Server Error" });
-      }
+    const query = isEmail
+      ? { email: id.toLowerCase() }
+      : { referralCode: id.toUpperCase() };
+
+    const user = await usersCollection.findOne(query, {
+      projection: { role: 1, _id: 0 },
     });
+
+    return res.json({ role: user?.role || "user" });
+  } catch (err) {
+    console.error("GET /users/role/:identifier error:", err);
+    return res.status(500).json({ error: "Internal Server Error" });
+  }
+});
+
 
     // get user profile
     app.get("/my-profile", verifyToken, async (req, res) => {
@@ -364,6 +415,7 @@ async function run() {
         res.status(500).send({ error: "Internal Server Error" });
       }
     });
+
 
     // get team data
     app.get("/my-team", verifyToken, async (req, res) => {
