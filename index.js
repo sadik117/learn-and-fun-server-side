@@ -20,9 +20,8 @@ const defaultWhitelist = [
   "http://localhost:5173",
   "https://learnandearned.netlify.app",
   "https://learnandearned.vercel.app",
-  "http://learnandearned.com",
-  "http://www.learnandearned.com",
-  "https://www.learnandearned.xyz"
+  "https://www.learnandearned.xyz",
+  "https://learnandearned.xyz"
 ];
 
 const whitelist = new Set([...defaultWhitelist, ...envOrigins]);
@@ -175,8 +174,11 @@ const verifyAdmin = async (req, res, next) => {
 
 async function run() {
   try {
-    // Connect the client to the server	(optional starting in v4.7)
-    await client.connect();
+    // Start Mongo connection in background; register routes immediately
+    client
+      .connect()
+      .then(() => console.log("MongoDB connected"))
+      .catch((e) => console.error("Mongo connect error:", e));
 
     // for missing users referral code and link setup
     async function addMissingReferralCodes() {
@@ -199,13 +201,20 @@ async function run() {
     }
 
     // Ensure all existing users have a referralCode, then index it for fast lookups
-    try {
-      await addMissingReferralCodes();
-      // Unique + sparse so missing values (if any) don't break index creation
-      await usersCollection.createIndex({ referralCode: 1 }, { unique: true, sparse: true });
-    } catch (e) {
-      console.warn("Referral code backfill/index warning:", e?.message || e);
-    }
+    // Run in background so it doesn't block route registration on cold starts
+    addMissingReferralCodes()
+      .then(() =>
+        usersCollection.createIndex(
+          { referralCode: 1 },
+          { unique: true, sparse: true }
+        )
+      )
+      .catch((e) =>
+        console.warn(
+          "Referral code backfill/index warning:",
+          e?.message || e
+        )
+      );
 
     // signup user with reffer
     app.post("/users", async (req, res) => {
