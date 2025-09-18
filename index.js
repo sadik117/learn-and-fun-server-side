@@ -933,7 +933,7 @@ app.get("/users/role/:identifier", async (req, res) => {
     /**
      * PUBLIC (or protected) – list courses
      */
-    app.get("/courses", async (req, res) => {
+    app.get("/courses", verifyToken, async (req, res) => {
       try {
         const courses = await coursesCollection
           .find({})
@@ -950,7 +950,7 @@ app.get("/users/role/:identifier", async (req, res) => {
      * PUBLIC (or protected) – list videos of a course
      * /videos?courseKey=web-design
      */
-    app.get("/videos", async (req, res) => {
+    app.get("/videos", verifyToken, async (req, res) => {
       try {
         const { courseKey } = req.query;
         if (!courseKey) {
