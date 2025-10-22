@@ -215,7 +215,7 @@ async function run() {
 
     // signup user with reffer
     app.post("/users", async (req, res) => {
-      const { email: inputEmail, name, phone, referredBy } = req.body;
+      const { email: inputEmail, name, phone, photoURL, referredBy } = req.body;
       if (!inputEmail)
         return res.status(400).send({ error: "Email is required" });
 
@@ -237,6 +237,7 @@ async function run() {
         email,
         role: "user",
         phone,
+        photoURL,
         referralCode,
         referredBy: referredBy || null, // store inviter's referralCode here
         teamMembers: [],
@@ -259,7 +260,7 @@ async function run() {
         }
       }
 
-      const token = jwt.sign({ email }, jwtSecret, { expiresIn: "20d" });
+      const token = jwt.sign({ email }, jwtSecret, { expiresIn: "3d" });
 
       res.status(201).send({
         message: "User registered successfully",
