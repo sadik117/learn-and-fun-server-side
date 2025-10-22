@@ -269,6 +269,19 @@ async function run() {
       });
     });
 
+    app.patch("/update-photo", async (req, res) => {
+      try {
+        const { email } = req.user; 
+        const { photoURL } = req.body;
+        if (!photoURL) return res.status(400).send({ error: "No photo URL" });
+
+        await usersCollection.updateOne({ email }, { $set: { photoURL } });
+        res.send({ success: true });
+      } catch (err) {
+        res.status(500).send({ error: err.message });
+      }
+    });
+
     // Rollback route
     app.delete("/users/:email", async (req, res) => {
       const { email } = req.params;
