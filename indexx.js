@@ -1,11 +1,11 @@
-require('dotenv').config();
-const express = require('express');
-const cors = require('cors');
-const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
-const nodemailer = require('nodemailer');
-const { randomBytes } = require('crypto');
-const jwt = require('jsonwebtoken');
-const serverless = require('serverless-http');
+require("dotenv").config();
+import express, { json } from 'express';
+import cors from 'cors';
+import { MongoClient, ServerApiVersion, ObjectId } from 'mongodb';
+import { createTransport } from 'nodemailer';
+import { randomBytes } from 'crypto';
+import { verify, sign } from 'jsonwebtoken';
+import serverless from 'serverless-http';
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -43,13 +43,12 @@ app.use(
   })
 );
 
-app.use(express.json());
+app.use(json());
 
 // ------------------------
 // MongoDB Connection
 // ------------------------
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASSWORD}@cluster0.hlucnuf.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0`;
-
 let cachedClient = null;
 let cachedDb = null;
 
@@ -64,7 +63,7 @@ async function getDb() {
 }
 
 // ------------------------
-// JWT Utilities
+// JWT Middleware
 // ------------------------
 const jwtSecret = process.env.JWT_SECRET;
 
@@ -72,11 +71,26 @@ const verifyToken = (req, res, next) => {
   const authHeader = req.headers.authorization;
   if (!authHeader) return res.status(401).send({ error: 'Unauthorized access' });
   const token = authHeader.split(' ')[1];
-  jwt.verify(token, jwtSecret, (err, decoded) => {
+  verify(token, jwtSecret, (err, decoded) => {
     if (err) return res.status(403).send({ error: 'Forbidden' });
     req.user = decoded;
     next();
   });
+};
+
+// ------------------------
+// Admin Middleware
+// ------------------------
+const verifyAdmin = async (req, res, next) => {
+  const db = await getDb();
+  const usersCollection = db.collection('users');
+  const email = req.user?.email;
+  if (!email) return res.status(401).send({ error: 'Unauthorized' });
+
+  const user = await usersCollection.findOne({ email });
+  if (user?.role !== 'admin') return res.status(403).send({ error: 'Admin only' });
+
+  next();
 };
 
 // ------------------------
@@ -85,7 +99,7 @@ const verifyToken = (req, res, next) => {
 async function storeOtp(email, otp) {
   const db = await getDb();
   const otpColl = db.collection('otps');
-  const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+  const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 mins
   await otpColl.updateOne({ email }, { $set: { otp, expiresAt } }, { upsert: true });
 }
 
@@ -104,6 +118,13 @@ async function verifyOtpDb(email, otp) {
 }
 
 // ------------------------
+// Utility Functions
+// ------------------------
+function generateReferralCode() {
+  return randomBytes(4).toString('hex').toUpperCase();
+}
+
+// ------------------------
 // Routes
 // ------------------------
 app.get('/', (req, res) => res.send('Learn and Earn is running..'));
@@ -114,16 +135,11 @@ app.post('/send-otp', async (req, res) => {
   if (!email) return res.status(400).json({ success: false, message: 'Email required' });
 
   const otp = Math.floor(100000 + Math.random() * 900000).toString();
-  const transporter = nodemailer.createTransport({
+  const transporter = createTransport({
     service: 'gmail',
     auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS },
   });
-  const mailOptions = {
-    from: process.env.EMAIL_USER,
-    to: email,
-    subject: 'OTP Code',
-    text: `Your OTP is: ${otp}. It will expire in 5 minutes.`,
-  };
+  const mailOptions = { from: process.env.EMAIL_USER, to: email, subject: 'OTP Code', text: `Your OTP is: ${otp}. It will expire in 10 minutes.` };
   try {
     await transporter.sendMail(mailOptions);
     await storeOtp(email, otp);
@@ -142,20 +158,25 @@ app.post('/verify-otp', async (req, res) => {
   res.json({ success: true, message: 'OTP verified' });
 });
 
-// User registration
+// ------------------------
+// Users Routes
+// ------------------------
 app.post('/users', async (req, res) => {
   try {
     const db = await getDb();
-    const usersColl = db.collection('users');
+    const usersCollection = db.collection('users');
+
     const { email: inputEmail, name, phone, photoURL, referredBy } = req.body;
     if (!inputEmail) return res.status(400).send({ error: 'Email is required' });
+
     const email = inputEmail.trim().toLowerCase();
-    let user = await usersColl.findOne({ email });
+    let user = await usersCollection.findOne({ email });
     if (user) {
-      const token = jwt.sign({ email }, jwtSecret, { expiresIn: '3d' });
+      const token = sign({ email }, jwtSecret, { expiresIn: '3d' });
       return res.status(200).send({ message: 'User already exists', token });
     }
-    const referralCode = randomBytes(4).toString('hex').toUpperCase();
+
+    const referralCode = generateReferralCode();
     const newUser = {
       name,
       email,
@@ -167,10 +188,13 @@ app.post('/users', async (req, res) => {
       teamMembers: [],
       createdAt: new Date(),
     };
-    const result = await usersColl.insertOne(newUser);
-    if (referredBy)
-      await usersColl.updateOne({ referralCode: referredBy }, { $push: { teamMembers: result.insertedId } });
-    const token = jwt.sign({ email }, jwtSecret, { expiresIn: '3d' });
+    const result = await usersCollection.insertOne(newUser);
+
+    if (referredBy) {
+      await usersCollection.updateOne({ referralCode: referredBy }, { $push: { teamMembers: result.insertedId } });
+    }
+
+    const token = sign({ email }, jwtSecret, { expiresIn: '3d' });
     res.status(201).send({
       message: 'User registered successfully',
       referralLink: `${process.env.CLIENT_URL}/auth/signup?ref=${referralCode}`,
@@ -1101,13 +1125,13 @@ app.get("/users/role", async (req, res) => {
     });
 
 // ------------------------
-// Server start
+// Serverless Export
 // ------------------------
-app.listen(port, () => {
-  console.log('Learn & Earn Server Running on Port', port);
-});
+export default serverless(app);
 
 // ------------------------
-// Export for serverless
+// Listen if not serverless
 // ------------------------
-module.exports = serverless(app);
+if (process.env.NODE_ENV !== 'serverless') {
+  app.listen(port, () => console.log(`Server running on port ${port}`));
+}
