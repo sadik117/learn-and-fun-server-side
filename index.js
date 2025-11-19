@@ -488,60 +488,74 @@ async function run() {
       }
     });
 
-    // PATCH to set role to "member" and initialize lottery fields + reward referrer
+    // PATCH: Approve pending user & reward referrer
     app.patch(
       "/pending-users/:email/approve",
       verifyToken,
       verifyAdmin,
       async (req, res) => {
-        const { email } = req.params;
-
         try {
-          // Find the user first
+          const { email } = req.params;
+
+          // Fetch the user once (avoid multiple queries)
           const user = await usersCollection.findOne({ email });
           if (!user) {
-            return res
-              .status(404)
-              .send({ success: false, message: "User not found" });
+            return res.status(404).json({
+              success: false,
+              message: "❌ User not found",
+            });
           }
 
-          // Update this user's role & initial balance
-          const result = await usersCollection.updateOne(
-            { email },
-            {
-              $set: {
-                role: "member",
-                freePlaysLeft: 3,
-                playsCount: 0,
-                balance: 800, // starting balance
-                profits: 0,
-              },
-            }
-          );
+          // Prevent re-approving existing members/admins
+          if (user.role !== "pending") {
+            return res.status(400).json({
+              success: false,
+              message: `⚠️ User is already a ${user.role}`,
+            });
+          }
 
-          // If the user was referred by someone, reward that referrer
+          const joinDate = new Date();
+          const unlockDate = new Date(joinDate);
+          unlockDate.setDate(unlockDate.getDate() + 3); // cleaner unlock update
+
+          const updateData = {
+            role: "member",
+            freePlaysLeft: 2,
+            playsCount: 0,
+            balance: 400,
+            profits: 0,
+            tokens: 0,
+            joinDate,
+            locked: false,
+            dailyFreePlaysUsed: 0,
+            lastFreePlay: null,
+            unlockDate,
+          };
+
+          // Approve user
+          await usersCollection.updateOne({ email }, { $set: updateData });
+
+          // Referral Bonus: Only if valid and actual user referred
           if (user.referredBy) {
             await usersCollection.updateOne(
-              { referralCode: user.referredBy }, // find referrer by referralCode
+              { referralCode: user.referredBy },
               {
-                $inc: { balance: 500, profits: 500, freePlaysLeft: 3 },
+                $inc: { freePlaysLeft: 2, tokens: 1 },
+                $set: { lastReferralRewardDate: new Date() }, // track reward date
               }
             );
           }
 
-          if (result.modifiedCount > 0) {
-            res.send({
-              success: true,
-              message: "User promoted to member",
-            });
-          } else {
-            res
-              .status(400)
-              .send({ success: false, message: "Failed to update role" });
-          }
+          res.json({
+            success: true,
+            message: "🎉 User approved successfully and promoted to member!",
+          });
         } catch (error) {
-          console.error(error);
-          res.status(500).send({ success: false, message: "Server error" });
+          console.error("❌ APPROVAL ERROR:", error);
+          res.status(500).json({
+            success: false,
+            message: "⚠️ Server error, please try again later",
+          });
         }
       }
     );
@@ -696,97 +710,133 @@ async function run() {
     });
 
     // POST /lottery/play
-    app.post("/lottery/play", verifyToken, async (req, res) => {
+    app.post("/lottery/play-free", verifyToken, async (req, res) => {
       try {
         const email = req.user.email;
-        const user = await usersCollection.findOne({ email });
+        const db = await getDb();
+        const usersCollection = db.collection("users");
 
-        if (!user) {
+        let user = await usersCollection.findOne({ email });
+        if (!user)
           return res
             .status(404)
             .send({ success: false, message: "User not found" });
-        }
 
-        let freePlaysLeft = user.freePlaysLeft ?? 0;
-        let playsCount = user.playsCount ?? 0;
-        let balance = user.balance ?? 0;
-        let profits = user.profits ?? 0;
+        const now = new Date();
+        const joinDate = new Date(user.createdAt || user.joinDate);
+        const daysSinceJoin = Math.floor(
+          (now - joinDate) / (1000 * 60 * 60 * 24)
+        );
 
-        // Not enough balance (and no free plays)
-        if (freePlaysLeft <= 0 && balance < 50) {
-          return res.status(400).send({
+        // ----------------------------
+        // 🔐 LOCK SYSTEM CONTROL
+        // ----------------------------
+        if (user.unlockDate && now > new Date(user.unlockDate)) {
+          await usersCollection.updateOne(
+            { email },
+            { $set: { locked: true } }
+          );
+          return res.status(403).send({
             success: false,
-            message: "Not enough free plays or balance to play.",
+            locked: true,
+            message: "Your free period is over. Need 4 tokens to unlock.",
           });
         }
 
-        // Track whether this spin consumed a free play or a paid play
-        const usedFreePlay = freePlaysLeft > 0;
-
-        // Deduct cost or free play
-        if (usedFreePlay) {
-          freePlaysLeft -= 1;
+        // Free for FIRST 3 days (Max 2 per day)
+        if (daysSinceJoin < 3) {
+          if (user.dailyFreePlaysUsed >= 2) {
+            return res.status(403).send({
+              success: false,
+              message: "Daily free play limit reached. Try again tomorrow.",
+            });
+          }
         } else {
-          balance -= 50; // paid spin costs 50 upfront
+          // After 3 days → must unlock
+          if (user.locked) {
+            if ((user.tokens || 0) < 4) {
+              return res.status(403).send({
+                success: false,
+                locked: true,
+                message: "Account locked. Need 4 tokens to unlock.",
+              });
+            }
+
+            // Deduct token & Unlock for 25 days
+            await usersCollection.updateOne(
+              { email },
+              {
+                $inc: { tokens: -4 },
+                $set: {
+                  locked: false,
+                  unlockDate: new Date(now.getTime() + 25 * 86400000),
+                },
+              }
+            );
+          }
         }
 
-        playsCount += 1;
+        // ----------------------------
+        // 🎯 PLAY FREE LOGIC
+        // ----------------------------
+        let freePlaysLeft = user.freePlaysLeft ?? 10; // Default 10 free
+        let dailyFreePlaysUsed = user.dailyFreePlaysUsed ?? 0;
 
-        // Generate initial slots (will be overridden to diamonds on win)
+        if (freePlaysLeft <= 0) {
+          return res.status(403).send({
+            success: false,
+            locked: true,
+            message: "No free plays left. Earn tokens to unlock.",
+          });
+        }
+
+        // Use a free play
+        freePlaysLeft -= 1;
+
+        // 🎰 Generate slots
         const slotItems = ["🍒", "🍋", "🍇", "🍊", "7️⃣", "⭐", "💎"];
-        const slots = [
+        let slots = [
           slotItems[Math.floor(Math.random() * slotItems.length)],
           slotItems[Math.floor(Math.random() * slotItems.length)],
           slotItems[Math.floor(Math.random() * slotItems.length)],
         ];
 
-        // Winning logic: 40% chance OR all 3 same symbols
+        // 🎉 Win logic
         let win = false;
         if (
           Math.random() < 0.4 ||
           (slots[0] === slots[1] && slots[1] === slots[2])
         ) {
           win = true;
-
-          // Always show 💎💎💎 on win
-          slots[0] = "💎";
-          slots[1] = "💎";
-          slots[2] = "💎";
-
-          // Prize is 50 taka. If this was a paid spin,
-          // also refund the stake (50) so the net gain is +50.
-          if (usedFreePlay) {
-            balance += 50; // free play: +50 net
-          } else {
-            balance += 100; // paid play: refund 50 + prize 50 -> net +50
-          }
-
-          // Track “profits” as the prize only (50)
-          profits += 50;
+          slots = ["💎", "💎", "💎"];
         }
 
-        // Save user
+        // Track daily limit
+        const last = user.lastFreePlay ? new Date(user.lastFreePlay) : null;
+        if (!last || now - last > 86400000) dailyFreePlaysUsed = 0;
+
+        dailyFreePlaysUsed += 1;
+
+        // Update DB
         await usersCollection.updateOne(
           { email },
-          { $set: { freePlaysLeft, playsCount, balance, profits } }
+          {
+            $set: {
+              freePlaysLeft,
+              slots,
+              dailyFreePlaysUsed,
+              lastFreePlay: now,
+              playsCount: (user.playsCount || 0) + 1,
+            },
+          }
         );
 
-        // Friendly message
-        const message = win
-          ? usedFreePlay
-            ? "Congrats! You won 50৳ 🎉" // (free play)
-            : "Congrats! You won 50৳ 🎉" // (stake refunded + 50৳ prize)
-          : "Better luck next time!";
-
-        return res.send({
+        res.send({
           success: true,
-          message,
           win,
-          slots, // 💎💎💎 on wins
+          slots,
+          message: win ? "🎉 You WON!" : "Try again!",
           freePlaysLeft,
-          playsCount,
-          balance,
-          profits,
         });
       } catch (err) {
         console.error(err);
