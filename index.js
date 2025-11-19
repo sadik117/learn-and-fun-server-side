@@ -46,28 +46,44 @@ app.use(
 app.use(express.json());
 
 // ------------------------
-// MongoDB Connection
+// JWT Secret
+// ------------------------
+const jwtSecret = process.env.JWT_SECRET;
+
+// ------------------------
+// MongoDB Setup
 // ------------------------
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASSWORD}@cluster0.hlucnuf.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0`;
 
 let cachedClient = null;
 let cachedDb = null;
+let usersCollection, coursesCollection, videosCollection, paymentsCollection, withdrawalsCollection;
 
-async function getDb() {
-  if (cachedDb && cachedClient) return cachedDb;
-  cachedClient = new MongoClient(uri, {
-    serverApi: { version: ServerApiVersion.v1, strict: true, deprecationErrors: true },
-  });
-  await cachedClient.connect();
-  cachedDb = cachedClient.db('learnNfunDB');
+async function initDb() {
+  if (!cachedDb) {
+    cachedClient = new MongoClient(uri, {
+      serverApi: { version: ServerApiVersion.v1, strict: true, deprecationErrors: true },
+    });
+    await cachedClient.connect();
+    cachedDb = cachedClient.db('learnNfunDB');
+
+    // Initialize collections
+    usersCollection = cachedDb.collection('users');
+    coursesCollection = cachedDb.collection('courses');
+    videosCollection = cachedDb.collection('videos');
+    paymentsCollection = cachedDb.collection('payments');
+    withdrawalsCollection = cachedDb.collection('withdrawals');
+
+    // Ensure unique indexes
+    await coursesCollection.createIndex({ key: 1 }, { unique: true });
+    await usersCollection.createIndex({ email: 1 }, { unique: true });
+  }
   return cachedDb;
 }
 
 // ------------------------
-// JWT Utilities
+// Middleware
 // ------------------------
-const jwtSecret = process.env.JWT_SECRET;
-
 const verifyToken = (req, res, next) => {
   const authHeader = req.headers.authorization;
   if (!authHeader) return res.status(401).send({ error: 'Unauthorized access' });
@@ -79,37 +95,31 @@ const verifyToken = (req, res, next) => {
   });
 };
 
-// ------------------------
-// OTP Utilities
-// ------------------------
-async function storeOtp(email, otp) {
-  const db = await getDb();
-  const otpColl = db.collection('otps');
-  const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
-  await otpColl.updateOne({ email }, { $set: { otp, expiresAt } }, { upsert: true });
-}
+// Admin middleware example
+const verifyAdmin = async (req, res, next) => {
+  const email = req.user?.email;
+  if (!email) return res.status(401).json({ error: 'Unauthorized' });
+  await initDb();
+  const user = await usersCollection.findOne({ email });
+  if (!user || user.role !== 'admin') return res.status(403).json({ error: 'Forbidden' });
+  next();
+};
 
-async function verifyOtpDb(email, otp) {
-  const db = await getDb();
-  const otpColl = db.collection('otps');
-  const record = await otpColl.findOne({ email });
-  if (!record) return { valid: false, message: 'No OTP sent' };
-  if (record.expiresAt < new Date()) {
-    await otpColl.deleteOne({ email });
-    return { valid: false, message: 'OTP expired' };
-  }
-  if (record.otp !== otp) return { valid: false, message: 'Invalid OTP' };
-  await otpColl.deleteOne({ email });
-  return { valid: true };
+// ------------------------
+// Utility functions
+// ------------------------
+function generateReferralCode() {
+  return randomBytes(4).toString('hex').toUpperCase();
 }
 
 // ------------------------
 // Routes
 // ------------------------
-app.get('/', (req, res) => res.send('Learn and Earn is running..'));
+app.get('/', (req, res) => res.send('Learn and Earn Server is running..'));
 
-// Send OTP
+// Example: Send OTP
 app.post('/send-otp', async (req, res) => {
+  await initDb();
   const { email } = req.body;
   if (!email) return res.status(400).json({ success: false, message: 'Email required' });
 
@@ -124,9 +134,12 @@ app.post('/send-otp', async (req, res) => {
     subject: 'OTP Code',
     text: `Your OTP is: ${otp}. It will expire in 5 minutes.`,
   };
+
   try {
     await transporter.sendMail(mailOptions);
-    await storeOtp(email, otp);
+    const otpColl = cachedDb.collection('otps');
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+    await otpColl.updateOne({ email }, { $set: { otp, expiresAt } }, { upsert: true });
     res.json({ success: true, otp }); // remove otp in production
   } catch (err) {
     console.error(err);
@@ -134,28 +147,21 @@ app.post('/send-otp', async (req, res) => {
   }
 });
 
-// Verify OTP
-app.post('/verify-otp', async (req, res) => {
-  const { email, otp } = req.body;
-  const result = await verifyOtpDb(email, otp);
-  if (!result.valid) return res.status(400).json({ success: false, message: result.message });
-  res.json({ success: true, message: 'OTP verified' });
-});
-
-// User registration
+// ------------------------
+// User registration example
+// ------------------------
 app.post('/users', async (req, res) => {
+  await initDb();
   try {
-    const db = await getDb();
-    const usersColl = db.collection('users');
     const { email: inputEmail, name, phone, photoURL, referredBy } = req.body;
     if (!inputEmail) return res.status(400).send({ error: 'Email is required' });
     const email = inputEmail.trim().toLowerCase();
-    let user = await usersColl.findOne({ email });
+    let user = await usersCollection.findOne({ email });
     if (user) {
       const token = jwt.sign({ email }, jwtSecret, { expiresIn: '3d' });
       return res.status(200).send({ message: 'User already exists', token });
     }
-    const referralCode = randomBytes(4).toString('hex').toUpperCase();
+    const referralCode = generateReferralCode();
     const newUser = {
       name,
       email,
@@ -167,9 +173,9 @@ app.post('/users', async (req, res) => {
       teamMembers: [],
       createdAt: new Date(),
     };
-    const result = await usersColl.insertOne(newUser);
+    const result = await usersCollection.insertOne(newUser);
     if (referredBy)
-      await usersColl.updateOne({ referralCode: referredBy }, { $push: { teamMembers: result.insertedId } });
+      await usersCollection.updateOne({ referralCode: referredBy }, { $push: { teamMembers: result.insertedId } });
     const token = jwt.sign({ email }, jwtSecret, { expiresIn: '3d' });
     res.status(201).send({
       message: 'User registered successfully',
@@ -181,6 +187,7 @@ app.post('/users', async (req, res) => {
     res.status(500).send({ error: 'Server error' });
   }
 });
+
 
 // Update photo
 app.patch("/users/update-photo", verifyToken, async (req, res) => {
@@ -864,18 +871,34 @@ app.get("/users/role", async (req, res) => {
     /**
      * PUBLIC (or protected) – list courses
      */
-    app.get("/courses", verifyToken, async (req, res) => {
-      try {
-        const courses = await coursesCollection
-          .find({})
-          .project({ name: 1, key: 1, createdAt: 1 })
-          .toArray();
-        res.send(courses);
-      } catch (e) {
-        console.error(e);
-        res.status(500).send({ error: "Failed to fetch courses" });
-      }
-    });
+    
+// ------------------------
+// Courses routes example
+// ------------------------
+app.get('/courses', verifyToken, async (req, res) => {
+  await initDb();
+  try {
+    const courses = await coursesCollection.find({}).project({ name: 1, key: 1, createdAt: 1 }).toArray();
+    res.send(courses);
+  } catch (err) {
+    console.error(err);
+    res.status(500).send({ error: 'Failed to fetch courses' });
+  }
+});
+
+app.post('/courses', verifyToken, verifyAdmin, async (req, res) => {
+  await initDb();
+  try {
+    const { key, name } = req.body;
+    if (!key || !name) return res.status(400).send({ error: 'key & name required' });
+    const result = await coursesCollection.insertOne({ key, name, createdAt: new Date() });
+    res.send({ success: true, insertedId: result.insertedId });
+  } catch (e) {
+    if (e?.code === 11000) return res.status(409).send({ error: 'Course key already exists' });
+    console.error(e);
+    res.status(500).send({ error: 'Failed to create course' });
+  }
+});
 
     /**
      * PUBLIC (or protected) – list videos of a course
@@ -896,28 +919,6 @@ app.get("/users/role", async (req, res) => {
       } catch (e) {
         console.error(e);
         res.status(500).send({ error: "Failed to fetch videos" });
-      }
-    });
-
-    /**
-     * ADMIN – create course
-     * body: { key, name }
-     */
-    app.post("/courses", verifyToken, verifyAdmin, async (req, res) => {
-      try {
-        const { key, name } = req.body;
-        if (!key || !name)
-          return res.status(400).send({ error: "key & name required" });
-
-        const doc = { key, name, createdAt: new Date() };
-        const result = await coursesCollection.insertOne(doc);
-        res.send({ success: true, insertedId: result.insertedId });
-      } catch (e) {
-        if (e?.code === 11000) {
-          return res.status(409).send({ error: "Course key already exists" });
-        }
-        console.error(e);
-        res.status(500).send({ error: "Failed to create course" });
       }
     });
 
@@ -1100,14 +1101,18 @@ app.get("/users/role", async (req, res) => {
       }
     });
 
-// ------------------------
-// Server start
-// ------------------------
-app.listen(port, () => {
-  console.log('Learn & Earn Server Running on Port', port);
-});
 
 // ------------------------
-// Export for serverless
+// Serverless export
 // ------------------------
 module.exports = serverless(app);
+
+// ------------------------
+// Local dev server
+// ------------------------
+if (require.main === module) {
+  app.listen(port, async () => {
+    await initDb();
+    console.log('Learn & Earn Server running on port', port);
+  });
+}
