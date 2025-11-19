@@ -1,5 +1,5 @@
-// Vercel serverless entrypoint exporting the Express app directly
-// This preserves the original request URL for proper routing
+// Vercel serverless entrypoint: export a plain handler function.
+// Exporting a function is the most-compatible shape for serverless builders.
 const app = require("../index");
 
-module.exports = app;
+module.exports = (req, res) => app(req, res);

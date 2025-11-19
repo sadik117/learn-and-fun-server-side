@@ -1192,4 +1192,9 @@ async function run() {
   }
 }
 run().catch(console.dir);
+// If this file is run directly (for local development), start the HTTP server.
+if (require.main === module) {
+  app.listen(port, () => console.log(`Server listening on port ${port}`));
+}
+
 module.exports = app;
