@@ -430,7 +430,7 @@ async function run() {
         res.send({
           ...rest,
           referralCode: ensuredReferralCode, // permanent main code
-          referralToken: ensuredReferralCode, // alias for frontend API
+          tokens: user.tokens ?? 0,
           referrer,
         });
       } catch (err) {
