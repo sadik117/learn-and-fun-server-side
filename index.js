@@ -1216,9 +1216,9 @@ async function run() {
     // Ensures that the client will close when you finish/error
     // await client.close();
     // START SERVER
-    app.listen(port, () => {
-      console.log("Learn & Earn Server Running on Port", port);
-    });
+    // app.listen(port, () => {
+    //   console.log("Learn & Earn Server Running on Port", port);
+    // });
   }
 }
 run().catch(console.dir);
