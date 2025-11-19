@@ -502,18 +502,10 @@ async function run() {
           if (!user) {
             return res.status(404).json({
               success: false,
-              message: "❌ User not found",
+              message: " User not found",
             });
           }
-
-          // Prevent re-approving existing members/admins
-          if (user.role !== "pending") {
-            return res.status(400).json({
-              success: false,
-              message: `⚠️ User is already a ${user.role}`,
-            });
-          }
-
+          
           const joinDate = new Date();
           const unlockDate = new Date(joinDate);
           unlockDate.setDate(unlockDate.getDate() + 3); // cleaner unlock update
@@ -548,13 +540,13 @@ async function run() {
 
           res.json({
             success: true,
-            message: "🎉 User approved successfully and promoted to member!",
+            message: "User approved successfully and promoted to member!",
           });
         } catch (error) {
-          console.error("❌ APPROVAL ERROR:", error);
+          console.error("APPROVAL ERROR:", error);
           res.status(500).json({
             success: false,
-            message: "⚠️ Server error, please try again later",
+            message: "Server error, please try again later",
           });
         }
       }
@@ -728,9 +720,8 @@ async function run() {
           (now - joinDate) / (1000 * 60 * 60 * 24)
         );
 
-        // ----------------------------
-        // 🔐 LOCK SYSTEM CONTROL
-        // ----------------------------
+        //  LOCK SYSTEM CONTROL
+
         if (user.unlockDate && now > new Date(user.unlockDate)) {
           await usersCollection.updateOne(
             { email },
@@ -776,9 +767,8 @@ async function run() {
           }
         }
 
-        // ----------------------------
-        // 🎯 PLAY FREE LOGIC
-        // ----------------------------
+        //  PLAY FREE LOGIC
+        
         let freePlaysLeft = user.freePlaysLeft ?? 10; // Default 10 free
         let dailyFreePlaysUsed = user.dailyFreePlaysUsed ?? 0;
 
@@ -793,7 +783,7 @@ async function run() {
         // Use a free play
         freePlaysLeft -= 1;
 
-        // 🎰 Generate slots
+        // Generate slots
         const slotItems = ["🍒", "🍋", "🍇", "🍊", "7️⃣", "⭐", "💎"];
         let slots = [
           slotItems[Math.floor(Math.random() * slotItems.length)],
@@ -801,7 +791,7 @@ async function run() {
           slotItems[Math.floor(Math.random() * slotItems.length)],
         ];
 
-        // 🎉 Win logic
+        //  Win logic
         let win = false;
         if (
           Math.random() < 0.4 ||
@@ -835,7 +825,7 @@ async function run() {
           success: true,
           win,
           slots,
-          message: win ? "🎉 You WON!" : "Try again!",
+          message: win ? "You WON!" : "Try again!",
           freePlaysLeft,
         });
       } catch (err) {
