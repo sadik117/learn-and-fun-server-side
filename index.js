@@ -1,14 +1,14 @@
-require('dotenv').config();
-const express = require('express');
-const cors = require('cors');
-const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
-const nodemailer = require('nodemailer');
-const { randomBytes } = require('crypto');
-const jwt = require('jsonwebtoken');
-const serverless = require('serverless-http');
+// server.js
+import 'dotenv/config';
+import express, { json } from 'express';
+import cors from 'cors';
+import { MongoClient, ServerApiVersion, ObjectId } from 'mongodb';
+import { createTransport } from 'nodemailer';
+import { randomBytes } from 'crypto';
+import { verify, sign } from 'jsonwebtoken';
+import serverless from 'serverless-http';
 
 const app = express();
-const port = process.env.PORT || 3000;
 
 // ------------------------
 // CORS Setup
@@ -43,103 +43,88 @@ app.use(
   })
 );
 
-app.use(express.json());
+app.use(json());
 
 // ------------------------
-// JWT Secret
-// ------------------------
-const jwtSecret = process.env.JWT_SECRET;
-
-// ------------------------
-// MongoDB Setup
+// MongoDB Connection (Serverless Safe)
 // ------------------------
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASSWORD}@cluster0.hlucnuf.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0`;
-
 let cachedClient = null;
 let cachedDb = null;
-let usersCollection, coursesCollection, videosCollection, paymentsCollection, withdrawalsCollection;
 
-async function initDb() {
-  if (!cachedDb) {
-    cachedClient = new MongoClient(uri, {
-      serverApi: { version: ServerApiVersion.v1, strict: true, deprecationErrors: true },
-    });
-    await cachedClient.connect();
-    cachedDb = cachedClient.db('learnNfunDB');
-
-    // Initialize collections
-    usersCollection = cachedDb.collection('users');
-    coursesCollection = cachedDb.collection('courses');
-    videosCollection = cachedDb.collection('videos');
-    paymentsCollection = cachedDb.collection('payments');
-    withdrawalsCollection = cachedDb.collection('withdrawals');
-
-    // Ensure unique indexes
-    await coursesCollection.createIndex({ key: 1 }, { unique: true });
-    await usersCollection.createIndex({ email: 1 }, { unique: true });
-  }
+async function getDb() {
+  if (cachedDb && cachedClient) return cachedDb;
+  cachedClient = new MongoClient(uri, {
+    serverApi: { version: ServerApiVersion.v1, strict: true, deprecationErrors: true },
+  });
+  await cachedClient.connect();
+  cachedDb = cachedClient.db('learnNfunDB');
   return cachedDb;
 }
 
 // ------------------------
-// Middleware
+// JWT
 // ------------------------
+const jwtSecret = process.env.JWT_SECRET;
+
 const verifyToken = (req, res, next) => {
   const authHeader = req.headers.authorization;
   if (!authHeader) return res.status(401).send({ error: 'Unauthorized access' });
   const token = authHeader.split(' ')[1];
-  jwt.verify(token, jwtSecret, (err, decoded) => {
+  verify(token, jwtSecret, (err, decoded) => {
     if (err) return res.status(403).send({ error: 'Forbidden' });
     req.user = decoded;
     next();
   });
 };
 
-// Admin middleware example
-const verifyAdmin = async (req, res, next) => {
-  const email = req.user?.email;
-  if (!email) return res.status(401).json({ error: 'Unauthorized' });
-  await initDb();
-  const user = await usersCollection.findOne({ email });
-  if (!user || user.role !== 'admin') return res.status(403).json({ error: 'Forbidden' });
-  next();
-};
+// ------------------------
+// OTP Utilities
+// ------------------------
+async function storeOtp(email, otp) {
+  const db = await getDb();
+  const otpColl = db.collection('otps');
+  const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 mins
+  await otpColl.updateOne(
+    { email },
+    { $set: { otp, expiresAt } },
+    { upsert: true }
+  );
+}
 
-// ------------------------
-// Utility functions
-// ------------------------
-function generateReferralCode() {
-  return randomBytes(4).toString('hex').toUpperCase();
+async function verifyOtpDb(email, otp) {
+  const db = await getDb();
+  const otpColl = db.collection('otps');
+  const record = await otpColl.findOne({ email });
+  if (!record) return { valid: false, message: 'No OTP sent' };
+  if (record.expiresAt < new Date()) {
+    await otpColl.deleteOne({ email });
+    return { valid: false, message: 'OTP expired' };
+  }
+  if (record.otp !== otp) return { valid: false, message: 'Invalid OTP' };
+  await otpColl.deleteOne({ email });
+  return { valid: true };
 }
 
 // ------------------------
 // Routes
 // ------------------------
-app.get('/', (req, res) => res.send('Learn and Earn Server is running..'));
+app.get('/', (req, res) => res.send('Learn and Earn is running..'));
 
-// Example: Send OTP
+// Send OTP
 app.post('/send-otp', async (req, res) => {
-  await initDb();
   const { email } = req.body;
   if (!email) return res.status(400).json({ success: false, message: 'Email required' });
 
   const otp = Math.floor(100000 + Math.random() * 900000).toString();
-  const transporter = nodemailer.createTransport({
+  const transporter = createTransport({
     service: 'gmail',
     auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS },
   });
-  const mailOptions = {
-    from: process.env.EMAIL_USER,
-    to: email,
-    subject: 'OTP Code',
-    text: `Your OTP is: ${otp}. It will expire in 5 minutes.`,
-  };
-
+  const mailOptions = { from: process.env.EMAIL_USER, to: email, subject: 'OTP Code', text: `Your OTP is: ${otp}. It will expire in 5 minutes.` };
   try {
     await transporter.sendMail(mailOptions);
-    const otpColl = cachedDb.collection('otps');
-    const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
-    await otpColl.updateOne({ email }, { $set: { otp, expiresAt } }, { upsert: true });
+    await storeOtp(email, otp);
     res.json({ success: true, otp }); // remove otp in production
   } catch (err) {
     console.error(err);
@@ -147,47 +132,38 @@ app.post('/send-otp', async (req, res) => {
   }
 });
 
-// ------------------------
-// User registration example
-// ------------------------
+// Verify OTP
+app.post('/verify-otp', async (req, res) => {
+  const { email, otp } = req.body;
+  const result = await verifyOtpDb(email, otp);
+  if (!result.valid) return res.status(400).json({ success: false, message: result.message });
+  res.json({ success: true, message: 'OTP verified' });
+});
+
+// User registration + JWT
 app.post('/users', async (req, res) => {
-  await initDb();
   try {
+    const db = await getDb();
+    const usersColl = db.collection('users');
     const { email: inputEmail, name, phone, photoURL, referredBy } = req.body;
     if (!inputEmail) return res.status(400).send({ error: 'Email is required' });
     const email = inputEmail.trim().toLowerCase();
-    let user = await usersCollection.findOne({ email });
+    let user = await usersColl.findOne({ email });
     if (user) {
-      const token = jwt.sign({ email }, jwtSecret, { expiresIn: '3d' });
+      const token = sign({ email }, jwtSecret, { expiresIn: '3d' });
       return res.status(200).send({ message: 'User already exists', token });
     }
-    const referralCode = generateReferralCode();
-    const newUser = {
-      name,
-      email,
-      phone,
-      photoURL,
-      referralCode,
-      referredBy: referredBy || null,
-      role: 'user',
-      teamMembers: [],
-      createdAt: new Date(),
-    };
-    const result = await usersCollection.insertOne(newUser);
-    if (referredBy)
-      await usersCollection.updateOne({ referralCode: referredBy }, { $push: { teamMembers: result.insertedId } });
-    const token = jwt.sign({ email }, jwtSecret, { expiresIn: '3d' });
-    res.status(201).send({
-      message: 'User registered successfully',
-      referralLink: `${process.env.CLIENT_URL}/auth/signup?ref=${referralCode}`,
-      token,
-    });
+    const referralCode = randomBytes(4).toString('hex').toUpperCase();
+    const newUser = { name, email, phone, photoURL, referralCode, referredBy: referredBy || null, role: 'user', teamMembers: [], createdAt: new Date() };
+    const result = await usersColl.insertOne(newUser);
+    if (referredBy) await usersColl.updateOne({ referralCode: referredBy }, { $push: { teamMembers: result.insertedId } });
+    const token = sign({ email }, jwtSecret, { expiresIn: '3d' });
+    res.status(201).send({ message: 'User registered successfully', referralLink: `${process.env.CLIENT_URL}/auth/signup?ref=${referralCode}`, token });
   } catch (err) {
     console.error(err);
     res.status(500).send({ error: 'Server error' });
   }
 });
-
 
 // Update photo
 app.patch("/users/update-photo", verifyToken, async (req, res) => {
@@ -871,34 +847,18 @@ app.get("/users/role", async (req, res) => {
     /**
      * PUBLIC (or protected) – list courses
      */
-    
-// ------------------------
-// Courses routes example
-// ------------------------
-app.get('/courses', verifyToken, async (req, res) => {
-  await initDb();
-  try {
-    const courses = await coursesCollection.find({}).project({ name: 1, key: 1, createdAt: 1 }).toArray();
-    res.send(courses);
-  } catch (err) {
-    console.error(err);
-    res.status(500).send({ error: 'Failed to fetch courses' });
-  }
-});
-
-app.post('/courses', verifyToken, verifyAdmin, async (req, res) => {
-  await initDb();
-  try {
-    const { key, name } = req.body;
-    if (!key || !name) return res.status(400).send({ error: 'key & name required' });
-    const result = await coursesCollection.insertOne({ key, name, createdAt: new Date() });
-    res.send({ success: true, insertedId: result.insertedId });
-  } catch (e) {
-    if (e?.code === 11000) return res.status(409).send({ error: 'Course key already exists' });
-    console.error(e);
-    res.status(500).send({ error: 'Failed to create course' });
-  }
-});
+    app.get("/courses", verifyToken, async (req, res) => {
+      try {
+        const courses = await coursesCollection
+          .find({})
+          .project({ name: 1, key: 1, createdAt: 1 })
+          .toArray();
+        res.send(courses);
+      } catch (e) {
+        console.error(e);
+        res.status(500).send({ error: "Failed to fetch courses" });
+      }
+    });
 
     /**
      * PUBLIC (or protected) – list videos of a course
@@ -919,6 +879,28 @@ app.post('/courses', verifyToken, verifyAdmin, async (req, res) => {
       } catch (e) {
         console.error(e);
         res.status(500).send({ error: "Failed to fetch videos" });
+      }
+    });
+
+    /**
+     * ADMIN – create course
+     * body: { key, name }
+     */
+    app.post("/courses", verifyToken, verifyAdmin, async (req, res) => {
+      try {
+        const { key, name } = req.body;
+        if (!key || !name)
+          return res.status(400).send({ error: "key & name required" });
+
+        const doc = { key, name, createdAt: new Date() };
+        const result = await coursesCollection.insertOne(doc);
+        res.send({ success: true, insertedId: result.insertedId });
+      } catch (e) {
+        if (e?.code === 11000) {
+          return res.status(409).send({ error: "Course key already exists" });
+        }
+        console.error(e);
+        res.status(500).send({ error: "Failed to create course" });
       }
     });
 
@@ -1101,18 +1083,7 @@ app.post('/courses', verifyToken, verifyAdmin, async (req, res) => {
       }
     });
 
-
 // ------------------------
-// Serverless export
+// Export for Vercel
 // ------------------------
-module.exports = serverless(app);
-
-// ------------------------
-// Local dev server
-// ------------------------
-if (require.main === module) {
-  app.listen(port, async () => {
-    await initDb();
-    console.log('Learn & Earn Server running on port', port);
-  });
-}
+export default serverless(app);
