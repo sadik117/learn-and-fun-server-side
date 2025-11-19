@@ -1,5 +1,5 @@
 // Vercel serverless entrypoint exporting the Express app directly
 // This preserves the original request URL for proper routing
-const app = require("../index");
+import app from "../index";
 
-module.exports = app;
+export default app;
