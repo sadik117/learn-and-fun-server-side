@@ -1,12 +1,12 @@
 require("dotenv").config();
-const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
-const express = require("express");
-const cors = require("cors");
+import { MongoClient, ServerApiVersion, ObjectId } from "mongodb";
+import express, { json } from "express";
+import cors from "cors";
 const app = express();
 const port = process.env.PORT || 3000;
 // const admin = require("firebase-admin");
-const nodemailer = require("nodemailer");
-const crypto = require("crypto");
+import { createTransport } from "nodemailer";
+import { randomBytes } from "crypto";
 
 // Comma-separated list in env (recommended on Vercel):
 // CLIENT_ORIGINS=https://learnandearned.netlify.app,http://localhost:5173
@@ -50,7 +50,7 @@ app.use(cors(corsOptions));
 // Handle preflight for all routes
 // app.options("*", cors(corsOptions));
 
-app.use(express.json());
+app.use(json());
 
 const otpStore = new Map();
 
@@ -88,7 +88,7 @@ app.post("/send-otp", async (req, res) => {
   const otp = Math.floor(100000 + Math.random() * 900000).toString();
 
   // Setup Nodemailer transporter (example with Gmail SMTP)
-  const transporter = nodemailer.createTransport({
+  const transporter = createTransport({
     service: "gmail",
     auth: {
       user: process.env.EMAIL_USER,
@@ -137,7 +137,7 @@ app.post("/verify-otp", (req, res) => {
 });
 
 // JWT token verify
-const jwt = require("jsonwebtoken");
+import { verify, sign } from "jsonwebtoken";
 
 const verifyToken = (req, res, next) => {
   const authHeader = req.headers.authorization;
@@ -148,7 +148,7 @@ const verifyToken = (req, res, next) => {
   const token = authHeader.split(" ")[1];
   // console.log("JWT token:", token);
 
-  jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
+  verify(token, process.env.JWT_SECRET, (err, decoded) => {
     if (err) return res.status(403).send({ error: "Forbidden" });
     req.user = decoded;
     next();
@@ -160,7 +160,7 @@ const jwtSecret = process.env.JWT_SECRET;
 // Create a token and send it to client
 app.post("/jwt", (req, res) => {
   const user = req.body;
-  const token = jwt.sign(user, jwtSecret, { expiresIn: "3d" });
+  const token = sign(user, jwtSecret, { expiresIn: "3d" });
   res.send({ token });
 });
 
@@ -199,7 +199,7 @@ async function run() {
     }
 
     function generateReferralCode() {
-      return crypto.randomBytes(4).toString("hex").toUpperCase();
+      return randomBytes(4).toString("hex").toUpperCase();
     }
 
     // Ensure all existing users have a referralCode, then index it for fast lookups
@@ -226,7 +226,7 @@ async function run() {
       // Check if user already exists
       const existingUser = await usersCollection.findOne({ email });
       if (existingUser) {
-        const token = jwt.sign({ email }, jwtSecret, { expiresIn: "3d" });
+        const token = sign({ email }, jwtSecret, { expiresIn: "3d" });
         return res.status(200).send({ message: "User already exists", token });
       }
 
@@ -262,7 +262,7 @@ async function run() {
         }
       }
 
-      const token = jwt.sign({ email }, jwtSecret, { expiresIn: "3d" });
+      const token = sign({ email }, jwtSecret, { expiresIn: "3d" });
 
       res.status(201).send({
         message: "User registered successfully",
@@ -1233,4 +1233,4 @@ async function run() {
   }
 }
 run().catch(console.dir);
-module.exports = app;
+export default app;
