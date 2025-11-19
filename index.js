@@ -697,128 +697,139 @@ async function run() {
 
     // POST /lottery/play
     app.post("/lottery/play-free", verifyToken, async (req, res) => {
-  try {
-    const email = req.user.email;
-    let user = await usersCollection.findOne({ email });
+      try {
+        const email = req.user.email;
+        let user = await usersCollection.findOne({ email });
 
-    if (!user) return res.status(404).send({ success: false, message: "User not found" });
+        if (!user)
+          return res
+            .status(404)
+            .send({ success: false, message: "User not found" });
 
-    const now = new Date();
-    const joinDate = new Date(user.joinDate);
-    const daysSinceJoin = Math.floor((now - joinDate) / (1000 * 60 * 60 * 24));
+        const now = new Date();
+        const joinDate = new Date(user.joinDate);
+        const daysSinceJoin = Math.floor(
+          (now - joinDate) / (1000 * 60 * 60 * 24)
+        );
 
-    // -----------------------
-    // 🔐 LOCK SYSTEM CONTROL
-    // -----------------------
+        // -----------------------
+        // 🔐 LOCK SYSTEM CONTROL
+        // -----------------------
 
-    // Auto Lock if unlockDate expired (25 days)
-    if (user.unlockDate && now > new Date(user.unlockDate)) {
-      await usersCollection.updateOne({ email }, { $set: { locked: true } });
-      return res.status(403).send({
-        success: false,
-        locked: true,
-        message: "Your free period is over. Need 4 tokens to unlock."
-      });
-    }
-
-    // First 3 days free
-    if (daysSinceJoin < 3) {
-      if (user.dailyFreePlaysUsed >= 2) {
-        return res.status(403).send({
-          success: false,
-          message: "Daily free play limit reached. Try after 24 hours."
-        });
-      }
-    } else {
-      // After 3 days → must unlock
-      if (user.locked) {
-        if (user.tokens < 4) {
+        // Auto Lock if unlockDate expired (25 days)
+        if (user.unlockDate && now > new Date(user.unlockDate)) {
+          await usersCollection.updateOne(
+            { email },
+            { $set: { locked: true } }
+          );
           return res.status(403).send({
             success: false,
             locked: true,
-            message: "Account locked. Need 4 tokens to unlock."
+            message: "Your free period is over. Need 4 tokens to unlock.",
           });
         }
 
-        // Unlock using tokens
+        // First 3 days free
+        if (daysSinceJoin < 3) {
+          if (user.dailyFreePlaysUsed >= 2) {
+            return res.status(403).send({
+              success: false,
+              message: "Daily free play limit reached. Try after 24 hours.",
+            });
+          }
+        } else {
+          // After 3 days → must unlock
+          if (user.locked) {
+            if (user.tokens < 4) {
+              return res.status(403).send({
+                success: false,
+                locked: true,
+                message: "Account locked. Need 4 tokens to unlock.",
+              });
+            }
+
+            // Unlock using tokens
+            await usersCollection.updateOne(
+              { email },
+              {
+                $inc: { tokens: -4 },
+                $set: {
+                  locked: false,
+                  unlockDate: new Date(
+                    now.getTime() + 25 * 24 * 60 * 60 * 1000
+                  ), // 25 days unlocked
+                },
+              }
+            );
+          }
+        }
+
+        // -----------------------
+        // 🎯 PLAY FREE LOGIC
+        // -----------------------
+
+        let { freePlaysLeft, dailyFreePlaysUsed } = user;
+
+        if (freePlaysLeft <= 0) {
+          return res.status(403).send({
+            success: false,
+            locked: true,
+            message: "No free plays left. Earn tokens to unlock.",
+          });
+        }
+
+        // ✔ Use a free play
+        freePlaysLeft -= 1;
+
+        // 🎰 Slot items
+        const slotItems = ["🍒", "🍋", "🍇", "🍊", "7️⃣", "⭐", "💎"];
+        let slots = [
+          slotItems[Math.floor(Math.random() * slotItems.length)],
+          slotItems[Math.floor(Math.random() * slotItems.length)],
+          slotItems[Math.floor(Math.random() * slotItems.length)],
+        ];
+
+        // Win logic
+        let win = false;
+        if (
+          Math.random() < 0.4 ||
+          (slots[0] === slots[1] && slots[1] === slots[2])
+        ) {
+          win = true;
+          slots = ["💎", "💎", "💎"];
+        }
+
+        // Track daily limit
+        const last = user.lastFreePlay ? new Date(user.lastFreePlay) : null;
+        if (!last || now - last > 24 * 60 * 60 * 1000) dailyFreePlaysUsed = 0;
+
+        dailyFreePlaysUsed += 1;
+
         await usersCollection.updateOne(
           { email },
           {
-            $inc: { tokens: -4 },
             $set: {
-              locked: false,
-              unlockDate: new Date(now.getTime() + 25 * 24 * 60 * 60 * 1000) // 25 days unlocked
-            }
+              freePlaysLeft,
+              slots,
+              dailyFreePlaysUsed,
+              lastFreePlay: now,
+              playsCount: (user.playsCount || 0) + 1,
+            },
           }
         );
-      }
-    }
 
-    // -----------------------
-    // 🎯 PLAY FREE LOGIC
-    // -----------------------
-
-    let { freePlaysLeft, dailyFreePlaysUsed } = user;
-
-    if (freePlaysLeft <= 0) {
-      return res.status(403).send({
-        success: false,
-        locked: true,
-        message: "No free plays left. Earn tokens to unlock."
-      });
-    }
-
-    // ✔ Use a free play
-    freePlaysLeft -= 1;
-
-    // 🎰 Slot items
-    const slotItems = ["🍒", "🍋", "🍇", "🍊", "7️⃣", "⭐", "💎"];
-    let slots = [
-      slotItems[Math.floor(Math.random() * slotItems.length)],
-      slotItems[Math.floor(Math.random() * slotItems.length)],
-      slotItems[Math.floor(Math.random() * slotItems.length)],
-    ];
-
-    // Win logic
-    let win = false;
-    if (Math.random() < 0.4 || (slots[0] === slots[1] && slots[1] === slots[2])) {
-      win = true;
-      slots = ["💎", "💎", "💎"];
-    }
-
-    // Track daily limit
-    const last = user.lastFreePlay ? new Date(user.lastFreePlay) : null;
-    if (!last || now - last > 24 * 60 * 60 * 1000) dailyFreePlaysUsed = 0;
-
-    dailyFreePlaysUsed += 1;
-
-    await usersCollection.updateOne(
-      { email },
-      {
-        $set: {
-          freePlaysLeft,
+        return res.send({
+          success: true,
+          win,
           slots,
-          dailyFreePlaysUsed,
-          lastFreePlay: now,
-          playsCount: (user.playsCount || 0) + 1
-        }
+          message: win ? "🎉 You WON!" : "Try again!",
+          freePlaysLeft,
+        });
+      } catch (err) {
+        console.error(err);
+        res.status(500).send({ success: false, message: "Server error" });
       }
-    );
-
-    return res.send({
-      success: true,
-      win,
-      slots,
-      message: win ? "🎉 You WON!" : "Try again!",
-      freePlaysLeft
     });
-
-  } catch (err) {
-    console.error(err);
-    res.status(500).send({ success: false, message: "Server error" });
-  }
-});
-
 
     // Withdraw request API (member side)
     app.post("/withdraw", verifyToken, async (req, res) => {
@@ -1216,9 +1227,9 @@ async function run() {
     // Ensures that the client will close when you finish/error
     // await client.close();
     // START SERVER
-    // app.listen(port, () => {
-    //   console.log("Learn & Earn Server Running on Port", port);
-    // });
+    app.listen(port, () => {
+      console.log("Learn & Earn Server Running on Port", port);
+    });
   }
 }
 run().catch(console.dir);
