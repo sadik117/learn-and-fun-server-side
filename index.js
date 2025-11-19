@@ -22,6 +22,8 @@ const defaultWhitelist = [
   "https://learnandearned.vercel.app",
   "https://www.learnandearned.xyz",
   "https://learnandearned.xyz",
+  "https://www.learnandearned.com",
+  "https://learnandearned.com",
 ];
 
 const whitelist = new Set([...defaultWhitelist, ...envOrigins]);
@@ -497,7 +499,6 @@ async function run() {
         const { email } = req.params;
 
         try {
-          // Find the user first
           const user = await usersCollection.findOne({ email });
           if (!user) {
             return res
@@ -505,40 +506,39 @@ async function run() {
               .send({ success: false, message: "User not found" });
           }
 
-          // Update this user's role & initial balance
+          const joinDate = new Date();
+
+          const updateData = {
+            role: "member",
+            freePlaysLeft: 2,
+            playsCount: 0,
+            balance: 400,
+            profits: 0,
+            joinDate,
+            locked: false,
+            tokens: 0,
+            dailyFreePlaysUsed: 0,
+            lastFreePlay: null,
+            unlockDate: new Date(joinDate.getTime() + 3 * 24 * 60 * 60 * 1000), // first 3-day unlock
+          };
+
           const result = await usersCollection.updateOne(
             { email },
-            {
-              $set: {
-                role: "member",
-                freePlaysLeft: 3,
-                playsCount: 0,
-                balance: 800, // starting balance
-                profits: 0,
-              },
-            }
+            { $set: updateData }
           );
 
-          // If the user was referred by someone, reward that referrer
+          // Referral bonus
           if (user.referredBy) {
             await usersCollection.updateOne(
-              { referralCode: user.referredBy }, // find referrer by referralCode
-              {
-                $inc: { balance: 500, profits: 500, freePlaysLeft: 3 },
-              }
+              { referralCode: user.referredBy },
+              { $inc: { freePlaysLeft: 2, tokens: 1 } }
             );
           }
 
-          if (result.modifiedCount > 0) {
-            res.send({
-              success: true,
-              message: "User promoted to member",
-            });
-          } else {
-            res
-              .status(400)
-              .send({ success: false, message: "Failed to update role" });
-          }
+          return res.send({
+            success: true,
+            message: "User successfully approved and promoted to member",
+          });
         } catch (error) {
           console.error(error);
           res.status(500).send({ success: false, message: "Server error" });
@@ -696,103 +696,129 @@ async function run() {
     });
 
     // POST /lottery/play
-    app.post("/lottery/play", verifyToken, async (req, res) => {
-      try {
-        const email = req.user.email;
-        const user = await usersCollection.findOne({ email });
+    app.post("/lottery/play-free", verifyToken, async (req, res) => {
+  try {
+    const email = req.user.email;
+    let user = await usersCollection.findOne({ email });
 
-        if (!user) {
-          return res
-            .status(404)
-            .send({ success: false, message: "User not found" });
-        }
+    if (!user) return res.status(404).send({ success: false, message: "User not found" });
 
-        let freePlaysLeft = user.freePlaysLeft ?? 0;
-        let playsCount = user.playsCount ?? 0;
-        let balance = user.balance ?? 0;
-        let profits = user.profits ?? 0;
+    const now = new Date();
+    const joinDate = new Date(user.joinDate);
+    const daysSinceJoin = Math.floor((now - joinDate) / (1000 * 60 * 60 * 24));
 
-        // Not enough balance (and no free plays)
-        if (freePlaysLeft <= 0 && balance < 50) {
-          return res.status(400).send({
+    // -----------------------
+    // 🔐 LOCK SYSTEM CONTROL
+    // -----------------------
+
+    // Auto Lock if unlockDate expired (25 days)
+    if (user.unlockDate && now > new Date(user.unlockDate)) {
+      await usersCollection.updateOne({ email }, { $set: { locked: true } });
+      return res.status(403).send({
+        success: false,
+        locked: true,
+        message: "Your free period is over. Need 4 tokens to unlock."
+      });
+    }
+
+    // First 3 days free
+    if (daysSinceJoin < 3) {
+      if (user.dailyFreePlaysUsed >= 2) {
+        return res.status(403).send({
+          success: false,
+          message: "Daily free play limit reached. Try after 24 hours."
+        });
+      }
+    } else {
+      // After 3 days → must unlock
+      if (user.locked) {
+        if (user.tokens < 4) {
+          return res.status(403).send({
             success: false,
-            message: "Not enough free plays or balance to play.",
+            locked: true,
+            message: "Account locked. Need 4 tokens to unlock."
           });
         }
 
-        // Track whether this spin consumed a free play or a paid play
-        const usedFreePlay = freePlaysLeft > 0;
-
-        // Deduct cost or free play
-        if (usedFreePlay) {
-          freePlaysLeft -= 1;
-        } else {
-          balance -= 50; // paid spin costs 50 upfront
-        }
-
-        playsCount += 1;
-
-        // Generate initial slots (will be overridden to diamonds on win)
-        const slotItems = ["🍒", "🍋", "🍇", "🍊", "7️⃣", "⭐", "💎"];
-        const slots = [
-          slotItems[Math.floor(Math.random() * slotItems.length)],
-          slotItems[Math.floor(Math.random() * slotItems.length)],
-          slotItems[Math.floor(Math.random() * slotItems.length)],
-        ];
-
-        // Winning logic: 40% chance OR all 3 same symbols
-        let win = false;
-        if (
-          Math.random() < 0.4 ||
-          (slots[0] === slots[1] && slots[1] === slots[2])
-        ) {
-          win = true;
-
-          // Always show 💎💎💎 on win
-          slots[0] = "💎";
-          slots[1] = "💎";
-          slots[2] = "💎";
-
-          // Prize is 50 taka. If this was a paid spin,
-          // also refund the stake (50) so the net gain is +50.
-          if (usedFreePlay) {
-            balance += 50; // free play: +50 net
-          } else {
-            balance += 100; // paid play: refund 50 + prize 50 -> net +50
-          }
-
-          // Track “profits” as the prize only (50)
-          profits += 50;
-        }
-
-        // Save user
+        // Unlock using tokens
         await usersCollection.updateOne(
           { email },
-          { $set: { freePlaysLeft, playsCount, balance, profits } }
+          {
+            $inc: { tokens: -4 },
+            $set: {
+              locked: false,
+              unlockDate: new Date(now.getTime() + 25 * 24 * 60 * 60 * 1000) // 25 days unlocked
+            }
+          }
         );
-
-        // Friendly message
-        const message = win
-          ? usedFreePlay
-            ? "Congrats! You won 50৳ 🎉" // (free play)
-            : "Congrats! You won 50৳ 🎉" // (stake refunded + 50৳ prize)
-          : "Better luck next time!";
-
-        return res.send({
-          success: true,
-          message,
-          win,
-          slots, // 💎💎💎 on wins
-          freePlaysLeft,
-          playsCount,
-          balance,
-          profits,
-        });
-      } catch (err) {
-        console.error(err);
-        res.status(500).send({ success: false, message: "Server error" });
       }
+    }
+
+    // -----------------------
+    // 🎯 PLAY FREE LOGIC
+    // -----------------------
+
+    let { freePlaysLeft, dailyFreePlaysUsed } = user;
+
+    if (freePlaysLeft <= 0) {
+      return res.status(403).send({
+        success: false,
+        locked: true,
+        message: "No free plays left. Earn tokens to unlock."
+      });
+    }
+
+    // ✔ Use a free play
+    freePlaysLeft -= 1;
+
+    // 🎰 Slot items
+    const slotItems = ["🍒", "🍋", "🍇", "🍊", "7️⃣", "⭐", "💎"];
+    let slots = [
+      slotItems[Math.floor(Math.random() * slotItems.length)],
+      slotItems[Math.floor(Math.random() * slotItems.length)],
+      slotItems[Math.floor(Math.random() * slotItems.length)],
+    ];
+
+    // Win logic
+    let win = false;
+    if (Math.random() < 0.4 || (slots[0] === slots[1] && slots[1] === slots[2])) {
+      win = true;
+      slots = ["💎", "💎", "💎"];
+    }
+
+    // Track daily limit
+    const last = user.lastFreePlay ? new Date(user.lastFreePlay) : null;
+    if (!last || now - last > 24 * 60 * 60 * 1000) dailyFreePlaysUsed = 0;
+
+    dailyFreePlaysUsed += 1;
+
+    await usersCollection.updateOne(
+      { email },
+      {
+        $set: {
+          freePlaysLeft,
+          slots,
+          dailyFreePlaysUsed,
+          lastFreePlay: now,
+          playsCount: (user.playsCount || 0) + 1
+        }
+      }
+    );
+
+    return res.send({
+      success: true,
+      win,
+      slots,
+      message: win ? "🎉 You WON!" : "Try again!",
+      freePlaysLeft
     });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).send({ success: false, message: "Server error" });
+  }
+});
+
 
     // Withdraw request API (member side)
     app.post("/withdraw", verifyToken, async (req, res) => {
@@ -1189,6 +1215,10 @@ async function run() {
   } finally {
     // Ensures that the client will close when you finish/error
     // await client.close();
+    // START SERVER
+    app.listen(port, () => {
+      console.log("Learn & Earn Server Running on Port", port);
+    });
   }
 }
 run().catch(console.dir);
