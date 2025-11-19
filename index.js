@@ -1,185 +1,318 @@
-// server.js
-import 'dotenv/config';
-import express, { json } from 'express';
-import cors from 'cors';
-import { MongoClient, ServerApiVersion, ObjectId } from 'mongodb';
-import { createTransport } from 'nodemailer';
-import { randomBytes } from 'crypto';
-import { verify, sign } from 'jsonwebtoken';
-import serverless from 'serverless-http';
-
+require("dotenv").config();
+const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
+const express = require("express");
+const cors = require("cors");
 const app = express();
+const port = process.env.PORT || 3000;
+// const admin = require("firebase-admin");
+const nodemailer = require("nodemailer");
+const crypto = require("crypto");
 
-// ------------------------
-// CORS Setup
-// ------------------------
-const envOrigins = (process.env.CLIENT_ORIGINS || '')
-  .split(',')
+// Comma-separated list in env (recommended on Vercel):
+// CLIENT_ORIGINS=https://learnandearned.netlify.app,http://localhost:5173
+const envOrigins = (process.env.CLIENT_ORIGINS || "")
+  .split(",")
   .map((s) => s.trim())
   .filter(Boolean);
 
+// Safe defaults for local dev + your Netlify domain
 const defaultWhitelist = [
-  'http://localhost:5173',
-  'https://learnandearned.netlify.app',
-  'https://learnandearned.vercel.app',
-  'https://www.learnandearned.xyz',
-  'https://learnandearned.xyz',
-  'https://www.learnandearned.com',
-  'https://learnandearned.com',
+  "http://localhost:5173",
+  "https://learnandearned.netlify.app",
+  "https://learnandearned.vercel.app",
+  "https://www.learnandearned.xyz",
+  "https://learnandearned.xyz",
 ];
 
 const whitelist = new Set([...defaultWhitelist, ...envOrigins]);
 
-app.use(
-  cors({
-    origin: (origin, cb) => {
-      if (!origin) return cb(null, true);
-      if (whitelist.has(origin)) return cb(null, true);
-      return cb(new Error(`Not allowed by CORS: ${origin}`));
-    },
-    credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
-  })
-);
+const corsOptions = {
+  origin: (origin, cb) => {
+    // Allow server-to-server, curl, Postman (no origin header)
+    if (!origin) return cb(null, true);
 
-app.use(json());
+    // Explicitly allow any origin in the whitelist
+    if (whitelist.has(origin)) return cb(null, true);
 
-// ------------------------
-// MongoDB Connection (Serverless Safe)
-// ------------------------
+    // Optionally allow your preview subdomains on Netlify (uncomment if needed)
+    // if (/^https:\/\/.*--learnandearned\.netlify\.app$/.test(origin)) return cb(null, true);
+
+    return cb(new Error(`Not allowed by CORS: ${origin}`));
+  },
+  credentials: true, // so cookies/Authorization can be sent
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+};
+
+app.use(cors(corsOptions));
+// Handle preflight for all routes
+// app.options("*", cors(corsOptions));
+
+app.use(express.json());
+
+const otpStore = new Map();
+
+app.get("/", (req, res) => {
+  res.send("Learn and Earn is running..");
+});
+
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASSWORD}@cluster0.hlucnuf.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0`;
-let cachedClient = null;
-let cachedDb = null;
 
-async function getDb() {
-  if (cachedDb && cachedClient) return cachedDb;
-  cachedClient = new MongoClient(uri, {
-    serverApi: { version: ServerApiVersion.v1, strict: true, deprecationErrors: true },
+const client = new MongoClient(uri, {
+  serverApi: {
+    version: ServerApiVersion.v1,
+    strict: true,
+    deprecationErrors: true,
+  },
+});
+
+// Create Database
+const usersCollection = client.db("learnNfunDB").collection("users");
+const paymentsCollection = client.db("learnNfunDB").collection("payments");
+const withdrawalsCollection = client
+  .db("learnNfunDB")
+  .collection("withdrawals");
+const coursesCollection = client.db("learnNfunDB").collection("courses");
+const videosCollection = client.db("learnNfunDB").collection("videos");
+
+// Nodemailer otp sending..
+
+app.post("/send-otp", async (req, res) => {
+  const { email } = req.body;
+  if (!email)
+    return res.status(400).json({ success: false, message: "Email required" });
+
+  // Generate 6-digit OTP
+  const otp = Math.floor(100000 + Math.random() * 900000).toString();
+
+  // Setup Nodemailer transporter (example with Gmail SMTP)
+  const transporter = nodemailer.createTransport({
+    service: "gmail",
+    auth: {
+      user: process.env.EMAIL_USER,
+      pass: process.env.EMAIL_PASS,
+    },
   });
-  await cachedClient.connect();
-  cachedDb = cachedClient.db('learnNfunDB');
-  return cachedDb;
-}
 
-// ------------------------
-// JWT
-// ------------------------
-const jwtSecret = process.env.JWT_SECRET;
+  const mailOptions = {
+    from: process.env.EMAIL_USER,
+    to: email,
+    subject: "OTP Code",
+    text: `Your OTP is: ${otp}. It will expire in 5 minutes.`,
+  };
+
+  try {
+    await transporter.sendMail(mailOptions);
+
+    // Save OTP with expiration (store in memory for demo)
+    otpStore.set(email, { otp, expiresAt: Date.now() + 10 * 60 * 1000 });
+
+    res.json({ success: true, otp }); // send OTP for demo, remove in prod!
+  } catch (error) {
+    console.error("Error sending email:", error);
+    res.status(500).json({ success: false, message: "Failed to send OTP" });
+  }
+});
+
+// Optional: API to verify OTP on backend (better than frontend compare)
+app.post("/verify-otp", (req, res) => {
+  const { email, otp } = req.body;
+  const record = otpStore.get(email);
+
+  if (!record)
+    return res.status(400).json({ success: false, message: "No OTP sent" });
+  if (record.expiresAt < Date.now()) {
+    otpStore.delete(email);
+    return res.status(400).json({ success: false, message: "OTP expired" });
+  }
+
+  if (record.otp !== otp) {
+    return res.status(400).json({ success: false, message: "Invalid OTP" });
+  }
+
+  otpStore.delete(email); // OTP used, remove it
+  res.json({ success: true, message: "OTP verified" });
+});
+
+// JWT token verify
+const jwt = require("jsonwebtoken");
 
 const verifyToken = (req, res, next) => {
   const authHeader = req.headers.authorization;
-  if (!authHeader) return res.status(401).send({ error: 'Unauthorized access' });
-  const token = authHeader.split(' ')[1];
-  verify(token, jwtSecret, (err, decoded) => {
-    if (err) return res.status(403).send({ error: 'Forbidden' });
+
+  if (!authHeader)
+    return res.status(401).send({ error: "Unauthorized access" });
+
+  const token = authHeader.split(" ")[1];
+  // console.log("JWT token:", token);
+
+  jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
+    if (err) return res.status(403).send({ error: "Forbidden" });
     req.user = decoded;
     next();
   });
 };
+// your JWT secret
+const jwtSecret = process.env.JWT_SECRET;
 
-// ------------------------
-// OTP Utilities
-// ------------------------
-async function storeOtp(email, otp) {
-  const db = await getDb();
-  const otpColl = db.collection('otps');
-  const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 mins
-  await otpColl.updateOne(
-    { email },
-    { $set: { otp, expiresAt } },
-    { upsert: true }
-  );
-}
-
-async function verifyOtpDb(email, otp) {
-  const db = await getDb();
-  const otpColl = db.collection('otps');
-  const record = await otpColl.findOne({ email });
-  if (!record) return { valid: false, message: 'No OTP sent' };
-  if (record.expiresAt < new Date()) {
-    await otpColl.deleteOne({ email });
-    return { valid: false, message: 'OTP expired' };
-  }
-  if (record.otp !== otp) return { valid: false, message: 'Invalid OTP' };
-  await otpColl.deleteOne({ email });
-  return { valid: true };
-}
-
-// ------------------------
-// Routes
-// ------------------------
-app.get('/', (req, res) => res.send('Learn and Earn is running..'));
-
-// Send OTP
-app.post('/send-otp', async (req, res) => {
-  const { email } = req.body;
-  if (!email) return res.status(400).json({ success: false, message: 'Email required' });
-
-  const otp = Math.floor(100000 + Math.random() * 900000).toString();
-  const transporter = createTransport({
-    service: 'gmail',
-    auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS },
-  });
-  const mailOptions = { from: process.env.EMAIL_USER, to: email, subject: 'OTP Code', text: `Your OTP is: ${otp}. It will expire in 5 minutes.` };
-  try {
-    await transporter.sendMail(mailOptions);
-    await storeOtp(email, otp);
-    res.json({ success: true, otp }); // remove otp in production
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ success: false, message: 'Failed to send OTP' });
-  }
+// Create a token and send it to client
+app.post("/jwt", (req, res) => {
+  const user = req.body;
+  const token = jwt.sign(user, jwtSecret, { expiresIn: "3d" });
+  res.send({ token });
 });
 
-// Verify OTP
-app.post('/verify-otp', async (req, res) => {
-  const { email, otp } = req.body;
-  const result = await verifyOtpDb(email, otp);
-  if (!result.valid) return res.status(400).json({ success: false, message: result.message });
-  res.json({ success: true, message: 'OTP verified' });
-});
+// Middleware to verify admin
+const verifyAdmin = async (req, res, next) => {
+  const userEmail = req.user.email;
+  const user = await usersCollection.findOne({ email: userEmail });
+  if (!user || user.role !== "admin") {
+    return res.status(403).send({ error: "Forbidden - Admins only" });
+  }
+  next();
+};
 
-// User registration + JWT
-app.post('/users', async (req, res) => {
+async function run() {
   try {
-    const db = await getDb();
-    const usersColl = db.collection('users');
-    const { email: inputEmail, name, phone, photoURL, referredBy } = req.body;
-    if (!inputEmail) return res.status(400).send({ error: 'Email is required' });
-    const email = inputEmail.trim().toLowerCase();
-    let user = await usersColl.findOne({ email });
-    if (user) {
-      const token = sign({ email }, jwtSecret, { expiresIn: '3d' });
-      return res.status(200).send({ message: 'User already exists', token });
+    // Start Mongo connection in background; register routes immediately
+    client
+      .connect()
+      .then(() => console.log("MongoDB connected"))
+      .catch((e) => console.error("Mongo connect error:", e));
+
+    // for missing users referral code and link setup
+    async function addMissingReferralCodes() {
+      const usersWithoutCode = await usersCollection
+        .find({ referralCode: { $exists: false } })
+        .toArray();
+
+      for (const user of usersWithoutCode) {
+        const newCode = generateReferralCode(); // your existing function
+        await usersCollection.updateOne(
+          { _id: user._id },
+          { $set: { referralCode: newCode } }
+        );
+        console.log(`Set referralCode for user ${user.email} to ${newCode}`);
+      }
     }
-    const referralCode = randomBytes(4).toString('hex').toUpperCase();
-    const newUser = { name, email, phone, photoURL, referralCode, referredBy: referredBy || null, role: 'user', teamMembers: [], createdAt: new Date() };
-    const result = await usersColl.insertOne(newUser);
-    if (referredBy) await usersColl.updateOne({ referralCode: referredBy }, { $push: { teamMembers: result.insertedId } });
-    const token = sign({ email }, jwtSecret, { expiresIn: '3d' });
-    res.status(201).send({ message: 'User registered successfully', referralLink: `${process.env.CLIENT_URL}/auth/signup?ref=${referralCode}`, token });
-  } catch (err) {
-    console.error(err);
-    res.status(500).send({ error: 'Server error' });
-  }
-});
 
-// Update photo
-app.patch("/users/update-photo", verifyToken, async (req, res) => {
-  try {
-    const db = await getDb();
-    const usersCollection = db.collection('users');
-    const { email, photoURL } = req.body;
-    const result = await usersCollection.updateOne({ email }, { $set: { photoURL } });
-    res.send({ success: true, result });
-  } catch (err) {
-    console.error(err);
-    res.status(500).send({ success: false });
-  }
-});
+    function generateReferralCode() {
+      return crypto.randomBytes(4).toString("hex").toUpperCase();
+    }
 
-app.get("/users/role", async (req, res) => {
+    // Ensure all existing users have a referralCode, then index it for fast lookups
+    // Run in background so it doesn't block route registration on cold starts
+    addMissingReferralCodes()
+      .then(() =>
+        usersCollection.createIndex(
+          { referralCode: 1 },
+          { unique: true, sparse: true }
+        )
+      )
+      .catch((e) =>
+        console.warn("Referral code backfill/index warning:", e?.message || e)
+      );
+
+    // signup user with reffer
+    app.post("/users", async (req, res) => {
+      const { email: inputEmail, name, phone, photoURL, referredBy } = req.body;
+      if (!inputEmail)
+        return res.status(400).send({ error: "Email is required" });
+
+      const email = inputEmail.toString().trim().toLowerCase();
+
+      // Check if user already exists
+      const existingUser = await usersCollection.findOne({ email });
+      if (existingUser) {
+        const token = jwt.sign({ email }, jwtSecret, { expiresIn: "3d" });
+        return res.status(200).send({ message: "User already exists", token });
+      }
+
+      // Generate new referral code
+      const referralCode = generateReferralCode();
+
+      // New user object
+      const newUser = {
+        name,
+        email,
+        role: "user",
+        phone,
+        photoURL,
+        referralCode,
+        referredBy: referredBy || null, // store inviter's referralCode here
+        teamMembers: [],
+        createdAt: new Date(),
+      };
+
+      // Insert user
+      const result = await usersCollection.insertOne(newUser);
+
+      // If referredBy exists, update inviter’s teamMembers with THIS USER’s _id
+      if (referredBy) {
+        const inviter = await usersCollection.findOne({
+          referralCode: referredBy,
+        });
+        if (inviter) {
+          await usersCollection.updateOne(
+            { referralCode: referredBy },
+            { $push: { teamMembers: result.insertedId } }
+          );
+        }
+      }
+
+      const token = jwt.sign({ email }, jwtSecret, { expiresIn: "3d" });
+
+      res.status(201).send({
+        message: "User registered successfully",
+        referralLink: `${process.env.CLIENT_URL}/auth/signup?ref=${referralCode}`,
+        token,
+      });
+    });
+
+    // Update user image
+    app.patch("/users/update-photo", verifyToken, async (req, res) => {
+      const { email, photoURL } = req.body;
+      const result = await usersCollection.updateOne(
+        { email },
+        { $set: { photoURL } }
+      );
+      res.send({ success: true, result });
+    });
+
+    // Rollback route
+    app.delete("/users/:email", async (req, res) => {
+      const { email } = req.params;
+      const usersCollection = client.db("learnNfunDB").collection("users");
+      await usersCollection.deleteOne({ email });
+      res.send({ message: "User rolled back successfully" });
+    });
+
+    // // get user role (path version)
+    // app.get("/users/:email/role", async (req, res) => {
+    //   try {
+    //     const raw = req.params.email || "";
+    //     const email = decodeURIComponent(raw).trim().toLowerCase();
+
+    //     if (!email) return res.status(400).json({ error: "Email required" });
+
+    //     const user = await usersCollection.findOne(
+    //       { email },
+    //       { projection: { role: 1, _id: 0 } }
+    //     );
+
+    //     // Return a safe default to avoid client error loops
+    //     if (!user) return res.json({ role: "user" });
+
+    //     res.json({ role: user.role || "user" });
+    //   } catch (err) {
+    //     console.error("GET /users/:email/role error:", err);
+    //     res.status(500).json({ error: "Internal Server Error" });
+    //   }
+    // });
+
+    // get user role (query alias)
+    // get user role (query alias: email OR referralCode)
+    app.get("/users/role", async (req, res) => {
       try {
         const emailRaw = (req.query.email || "").toString();
         const codeRaw = (req.query.referralCode || "").toString();
@@ -364,6 +497,7 @@ app.get("/users/role", async (req, res) => {
         const { email } = req.params;
 
         try {
+          // Find the user first
           const user = await usersCollection.findOne({ email });
           if (!user) {
             return res
@@ -371,39 +505,40 @@ app.get("/users/role", async (req, res) => {
               .send({ success: false, message: "User not found" });
           }
 
-          const joinDate = new Date();
-
-          const updateData = {
-            role: "member",
-            freePlaysLeft: 2,
-            playsCount: 0,
-            balance: 400,
-            profits: 0,
-            joinDate,
-            locked: false,
-            tokens: 0,
-            dailyFreePlaysUsed: 0,
-            lastFreePlay: null,
-            unlockDate: new Date(joinDate.getTime() + 3 * 24 * 60 * 60 * 1000), // first 3-day unlock
-          };
-
+          // Update this user's role & initial balance
           const result = await usersCollection.updateOne(
             { email },
-            { $set: updateData }
+            {
+              $set: {
+                role: "member",
+                freePlaysLeft: 3,
+                playsCount: 0,
+                balance: 800, // starting balance
+                profits: 0,
+              },
+            }
           );
 
-          // Referral bonus
+          // If the user was referred by someone, reward that referrer
           if (user.referredBy) {
             await usersCollection.updateOne(
-              { referralCode: user.referredBy },
-              { $inc: { freePlaysLeft: 2, tokens: 1 } }
+              { referralCode: user.referredBy }, // find referrer by referralCode
+              {
+                $inc: { balance: 500, profits: 500, freePlaysLeft: 3 },
+              }
             );
           }
 
-          return res.send({
-            success: true,
-            message: "User successfully approved and promoted to member",
-          });
+          if (result.modifiedCount > 0) {
+            res.send({
+              success: true,
+              message: "User promoted to member",
+            });
+          } else {
+            res
+              .status(400)
+              .send({ success: false, message: "Failed to update role" });
+          }
         } catch (error) {
           console.error(error);
           res.status(500).send({ success: false, message: "Server error" });
@@ -561,134 +696,97 @@ app.get("/users/role", async (req, res) => {
     });
 
     // POST /lottery/play
-    app.post("/lottery/play-free", verifyToken, async (req, res) => {
+    app.post("/lottery/play", verifyToken, async (req, res) => {
       try {
         const email = req.user.email;
-        let user = await usersCollection.findOne({ email });
+        const user = await usersCollection.findOne({ email });
 
-        if (!user)
+        if (!user) {
           return res
             .status(404)
             .send({ success: false, message: "User not found" });
+        }
 
-        const now = new Date();
-        const joinDate = new Date(user.joinDate);
-        const daysSinceJoin = Math.floor(
-          (now - joinDate) / (1000 * 60 * 60 * 24)
-        );
+        let freePlaysLeft = user.freePlaysLeft ?? 0;
+        let playsCount = user.playsCount ?? 0;
+        let balance = user.balance ?? 0;
+        let profits = user.profits ?? 0;
 
-        // -----------------------
-        // 🔐 LOCK SYSTEM CONTROL
-        // -----------------------
-
-        // Auto Lock if unlockDate expired (25 days)
-        if (user.unlockDate && now > new Date(user.unlockDate)) {
-          await usersCollection.updateOne(
-            { email },
-            { $set: { locked: true } }
-          );
-          return res.status(403).send({
+        // Not enough balance (and no free plays)
+        if (freePlaysLeft <= 0 && balance < 50) {
+          return res.status(400).send({
             success: false,
-            locked: true,
-            message: "Your free period is over. Need 4 tokens to unlock.",
+            message: "Not enough free plays or balance to play.",
           });
         }
 
-        // First 3 days free
-        if (daysSinceJoin < 3) {
-          if (user.dailyFreePlaysUsed >= 2) {
-            return res.status(403).send({
-              success: false,
-              message: "Daily free play limit reached. Try after 24 hours.",
-            });
-          }
+        // Track whether this spin consumed a free play or a paid play
+        const usedFreePlay = freePlaysLeft > 0;
+
+        // Deduct cost or free play
+        if (usedFreePlay) {
+          freePlaysLeft -= 1;
         } else {
-          // After 3 days → must unlock
-          if (user.locked) {
-            if (user.tokens < 4) {
-              return res.status(403).send({
-                success: false,
-                locked: true,
-                message: "Account locked. Need 4 tokens to unlock.",
-              });
-            }
-
-            // Unlock using tokens
-            await usersCollection.updateOne(
-              { email },
-              {
-                $inc: { tokens: -4 },
-                $set: {
-                  locked: false,
-                  unlockDate: new Date(
-                    now.getTime() + 25 * 24 * 60 * 60 * 1000
-                  ), // 25 days unlocked
-                },
-              }
-            );
-          }
+          balance -= 50; // paid spin costs 50 upfront
         }
 
-        // -----------------------
-        // 🎯 PLAY FREE LOGIC
-        // -----------------------
+        playsCount += 1;
 
-        let { freePlaysLeft, dailyFreePlaysUsed } = user;
-
-        if (freePlaysLeft <= 0) {
-          return res.status(403).send({
-            success: false,
-            locked: true,
-            message: "No free plays left. Earn tokens to unlock.",
-          });
-        }
-
-        // ✔ Use a free play
-        freePlaysLeft -= 1;
-
-        // 🎰 Slot items
+        // Generate initial slots (will be overridden to diamonds on win)
         const slotItems = ["🍒", "🍋", "🍇", "🍊", "7️⃣", "⭐", "💎"];
-        let slots = [
+        const slots = [
           slotItems[Math.floor(Math.random() * slotItems.length)],
           slotItems[Math.floor(Math.random() * slotItems.length)],
           slotItems[Math.floor(Math.random() * slotItems.length)],
         ];
 
-        // Win logic
+        // Winning logic: 40% chance OR all 3 same symbols
         let win = false;
         if (
           Math.random() < 0.4 ||
           (slots[0] === slots[1] && slots[1] === slots[2])
         ) {
           win = true;
-          slots = ["💎", "💎", "💎"];
+
+          // Always show 💎💎💎 on win
+          slots[0] = "💎";
+          slots[1] = "💎";
+          slots[2] = "💎";
+
+          // Prize is 50 taka. If this was a paid spin,
+          // also refund the stake (50) so the net gain is +50.
+          if (usedFreePlay) {
+            balance += 50; // free play: +50 net
+          } else {
+            balance += 100; // paid play: refund 50 + prize 50 -> net +50
+          }
+
+          // Track “profits” as the prize only (50)
+          profits += 50;
         }
 
-        // Track daily limit
-        const last = user.lastFreePlay ? new Date(user.lastFreePlay) : null;
-        if (!last || now - last > 24 * 60 * 60 * 1000) dailyFreePlaysUsed = 0;
-
-        dailyFreePlaysUsed += 1;
-
+        // Save user
         await usersCollection.updateOne(
           { email },
-          {
-            $set: {
-              freePlaysLeft,
-              slots,
-              dailyFreePlaysUsed,
-              lastFreePlay: now,
-              playsCount: (user.playsCount || 0) + 1,
-            },
-          }
+          { $set: { freePlaysLeft, playsCount, balance, profits } }
         );
+
+        // Friendly message
+        const message = win
+          ? usedFreePlay
+            ? "Congrats! You won 50৳ 🎉" // (free play)
+            : "Congrats! You won 50৳ 🎉" // (stake refunded + 50৳ prize)
+          : "Better luck next time!";
 
         return res.send({
           success: true,
+          message,
           win,
-          slots,
-          message: win ? "🎉 You WON!" : "Try again!",
+          slots, // 💎💎💎 on wins
           freePlaysLeft,
+          playsCount,
+          balance,
+          profits,
         });
       } catch (err) {
         console.error(err);
@@ -1083,7 +1181,15 @@ app.get("/users/role", async (req, res) => {
       }
     });
 
-// ------------------------
-// Export for Vercel
-// ------------------------
-export default serverless(app);
+    // Send a ping to confirm a successful connection
+    // await client.db("admin").command({ ping: 1 });
+    // console.log(
+    //   "Pinged your deployment. You successfully connected to MongoDB!"
+    // );
+  } finally {
+    // Ensures that the client will close when you finish/error
+    // await client.close();
+  }
+}
+run().catch(console.dir);
+module.exports = app;
