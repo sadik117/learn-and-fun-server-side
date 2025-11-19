@@ -1,13 +1,17 @@
-import { getDb } from './db.js';
+const { getDb } = require('./db');
 
-export async function storeOtp(email, otp) {
+async function storeOtp(email, otp) {
   const db = await getDb();
   const otpColl = db.collection('otps');
-  const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 mins
-  await otpColl.updateOne({ email }, { $set: { otp, expiresAt } }, { upsert: true });
+  const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+  await otpColl.updateOne(
+    { email },
+    { $set: { otp, expiresAt } },
+    { upsert: true }
+  );
 }
 
-export async function verifyOtp(email, otp) {
+async function verifyOtpDb(email, otp) {
   const db = await getDb();
   const otpColl = db.collection('otps');
   const record = await otpColl.findOne({ email });
@@ -20,3 +24,5 @@ export async function verifyOtp(email, otp) {
   await otpColl.deleteOne({ email });
   return { valid: true };
 }
+
+module.exports = { storeOtp, verifyOtpDb };

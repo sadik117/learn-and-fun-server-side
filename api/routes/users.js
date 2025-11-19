@@ -1,44 +1,50 @@
-import express from 'express';
-import { randomBytes } from 'crypto';
-import { generateToken } from '../utils/jwt.js';
-import { getDb } from '../utils/db.js';
-
+const express = require('express');
 const router = express.Router();
+const { getDb } = require('../utils/db');
+const { verifyToken } = require('../utils/jwt');
 
-// Create or login user
-router.post('/', async (req, res) => {
+// Get current user profile
+router.get('/me', verifyToken, async (req, res) => {
   try {
     const db = await getDb();
-    const usersColl = db.collection('users');
-    const { email: inputEmail, name, phone, photoURL, referredBy } = req.body;
-    if (!inputEmail) return res.status(400).send({ error: 'Email is required' });
-
-    const email = inputEmail.trim().toLowerCase();
-    let user = await usersColl.findOne({ email });
-    if (user) {
-      const token = generateToken({ email });
-      return res.status(200).send({ message: 'User exists', token });
-    }
-
-    const referralCode = randomBytes(4).toString('hex').toUpperCase();
-    const newUser = { name, email, phone, photoURL, referralCode, referredBy: referredBy || null, role: 'user', teamMembers: [], createdAt: new Date() };
-    const result = await usersColl.insertOne(newUser);
-
-    if (referredBy) await usersColl.updateOne({ referralCode: referredBy }, { $push: { teamMembers: result.insertedId } });
-
-    const token = generateToken({ email });
-    res.status(201).send({ message: 'User registered', referralLink: `${process.env.CLIENT_URL}/auth/signup?ref=${referralCode}`, token });
+    const user = await db.collection('users').findOne({ email: req.user.email });
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    res.json(user);
   } catch (err) {
     console.error(err);
-    res.status(500).send({ error: 'Server error' });
+    res.status(500).json({ error: 'Server error' });
   }
 });
 
-// Get all users (protected route example)
-router.get('/', async (req, res) => {
-  const db = await getDb();
-  const users = await db.collection('users').find({}).toArray();
-  res.json(users);
+// Update user profile
+router.put('/me', verifyToken, async (req, res) => {
+  try {
+    const db = await getDb();
+    const updates = req.body;
+    await db.collection('users').updateOne(
+      { email: req.user.email },
+      { $set: updates }
+    );
+    const updatedUser = await db.collection('users').findOne({ email: req.user.email });
+    res.json(updatedUser);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
+  }
 });
 
-export default router;
+// Get team members (for referral system)
+router.get('/team', verifyToken, async (req, res) => {
+  try {
+    const db = await getDb();
+    const user = await db.collection('users').findOne({ email: req.user.email });
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    const members = await db.collection('users').find({ _id: { $in: user.teamMembers || [] } }).toArray();
+    res.json(members);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+module.exports = router;
