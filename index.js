@@ -429,7 +429,8 @@ async function run() {
 
         res.send({
           ...rest,
-          referralCode: ensuredReferralCode,
+          referralCode: ensuredReferralCode, // permanent main code
+          referralToken: ensuredReferralCode, // alias for frontend API
           referrer,
         });
       } catch (err) {
@@ -505,7 +506,7 @@ async function run() {
               message: " User not found",
             });
           }
-          
+
           const joinDate = new Date();
           const unlockDate = new Date(joinDate);
           unlockDate.setDate(unlockDate.getDate() + 3); // cleaner unlock update
@@ -768,7 +769,7 @@ async function run() {
         }
 
         //  PLAY FREE LOGIC
-        
+
         let freePlaysLeft = user.freePlaysLeft ?? 10; // Default 10 free
         let dailyFreePlaysUsed = user.dailyFreePlaysUsed ?? 0;
 
