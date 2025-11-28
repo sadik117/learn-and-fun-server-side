@@ -703,158 +703,107 @@ async function run() {
     });
 
     // POST /lottery/play
-    app.post("/lottery/play-free", verifyToken, async (req, res) => {
+    app.post("/lottery/play-free", async (req, res) => {
       try {
-        const email = req.user.email;
-        const db = await getDb();
-        const usersCollection = db.collection("users");
+        console.log("PLAY FREE API HIT");
 
-        let user = await usersCollection.findOne({ email });
-        if (!user)
-          return res
-            .status(404)
-            .send({ success: false, message: "User not found" });
+        const { email } = req.body;
 
+        if (!email) {
+          return res.status(400).send({
+            success: false,
+            message: "Email is required",
+          });
+        }
+
+        // Get user
+        const user = await usersCollection.findOne({ email });
+
+        if (!user) {
+          return res.status(404).send({
+            success: false,
+            message: "User not found",
+          });
+        }
+
+        // Time logic
         const now = new Date();
-        const joinDate = new Date(user.createdAt || user.joinDate);
-        const daysSinceJoin = Math.floor(
-          (now - joinDate) / (1000 * 60 * 60 * 24)
-        );
+        const last = user.lastFreePlay ? new Date(user.lastFreePlay) : null;
 
-        // ---------------------------
-        //  LOCK SYSTEM CONTROL
-        // ---------------------------
-        if (user.unlockDate && now > new Date(user.unlockDate)) {
-          await usersCollection.updateOne(
-            { email },
-            { $set: { locked: true } }
-          );
+        let dailyFreePlaysUsed = user.dailyFreePlaysUsed || 0;
 
-          return res.status(403).send({
+        // Reset daily plays at 24 hours
+        if (!last || isNaN(last.getTime()) || now - last > 86400000) {
+          dailyFreePlaysUsed = 0;
+        }
+
+        // Limit per day: 3
+        if (dailyFreePlaysUsed >= 3) {
+          return res.send({
             success: false,
-            locked: true,
-            message: "Your free period is over. Need 4 tokens to unlock.",
+            message: "Daily free play limit reached",
           });
         }
 
-        // First 3 days → 2 free plays per day
-        if (daysSinceJoin < 3) {
-          if (user.dailyFreePlaysUsed >= 2) {
-            return res.status(403).send({
-              success: false,
-              message: "Daily free play limit reached. Try again tomorrow.",
-            });
-          }
-        } else {
-          // After 3 days → must unlock
-          if (user.locked) {
-            if ((user.tokens || 0) < 4) {
-              return res.status(403).send({
-                success: false,
-                locked: true,
-                message: "Account locked. Need 4 tokens to unlock.",
-              });
-            }
+        // Slot machine icons
+        const icons = ["🍒", "🍋", "⭐", "💎"];
 
-            // Deduct 4 tokens & unlock 25 days
-            await usersCollection.updateOne(
-              { email },
-              {
-                $inc: { tokens: -4 },
-                $set: {
-                  locked: false,
-                  unlockDate: new Date(now.getTime() + 25 * 86400000),
-                },
-              }
-            );
-          }
-        }
-
-        // ---------------------------
-        //  PLAY FREE LOGIC
-        // ---------------------------
-        let freePlaysLeft = user.freePlaysLeft ?? 0;
-        let dailyFreePlaysUsed = user.dailyFreePlaysUsed ?? 0;
-
-        if (freePlaysLeft <= 0) {
-          return res.status(403).send({
-            success: false,
-            locked: true,
-            message: "No free plays left. Earn tokens to unlock.",
-          });
-        }
-
-        // Deduct free play
-        freePlaysLeft -= 1;
-
-        // Slot items
-        const slotItems = ["🍒", "🍋", "🍇", "🍊", "7️⃣", "⭐", "💎"];
         let slots = [
-          slotItems[Math.floor(Math.random() * slotItems.length)],
-          slotItems[Math.floor(Math.random() * slotItems.length)],
-          slotItems[Math.floor(Math.random() * slotItems.length)],
+          icons[Math.floor(Math.random() * icons.length)],
+          icons[Math.floor(Math.random() * icons.length)],
+          icons[Math.floor(Math.random() * icons.length)],
         ];
 
-        // ---------------------------
-        //  WIN LOGIC
-        // ---------------------------
+        // WIN logic
         let win = false;
+
         if (
-          Math.random() < 0.4 ||
+          Math.random() < 0.4 || // 40% chance
           (slots[0] === slots[1] && slots[1] === slots[2])
         ) {
           win = true;
           slots = ["💎", "💎", "💎"];
         }
 
-        // ---------------------------
-        //  DAILY FREE PLAY RESET
-        // ---------------------------
-        const last = user.lastFreePlay ? new Date(user.lastFreePlay) : null;
-        if (!last || now - last > 86400000) {
-          dailyFreePlaysUsed = 0; // reset daily count
-        }
-
-        dailyFreePlaysUsed += 1;
-
-        // ---------------------------
-        //  WIN REWARD (20 TAKA)
-        // ---------------------------
+        // Reward 20 taka
         const reward = win ? 20 : 0;
 
-        // ---------------------------
-        // 📌 UPDATE USER DATA
-        // ---------------------------
+        // Update user
         await usersCollection.updateOne(
           { email },
           {
             $set: {
-              freePlaysLeft,
+              freePlaysLeft: user.freePlaysLeft, // no deduction for free play
               slots,
-              dailyFreePlaysUsed,
+              dailyFreePlaysUsed: dailyFreePlaysUsed + 1,
               lastFreePlay: now,
-              playsCount: (user.playsCount || 0) + 1,
+              playsCount: Number(user.playsCount || 0) + 1,
             },
-            ...(win && { $inc: { balance: reward } }),
           }
         );
 
-        // ---------------------------
-        // 📤 SEND RESPONSE
-        // ---------------------------
-        res.send({
+        // If win → add balance
+        if (win) {
+          await usersCollection.updateOne(
+            { email },
+            { $inc: { balance: reward } }
+          );
+        }
+
+        return res.send({
           success: true,
           win,
           reward,
           slots,
-          message: win
-            ? `You WON! +${reward} Taka added to your balance`
-            : "Try again!",
-          freePlaysLeft,
+          newBalance: user.balance + reward,
+          message: win ? `You WIN! +${reward} Taka added` : "Try again!",
         });
       } catch (err) {
-        console.error(err);
-        res.status(500).send({ success: false, message: "Server error" });
+        console.error("PLAY FREE ERROR:", err);
+        res.status(500).send({
+          success: false,
+          message: "Server error. Check logs.",
+        });
       }
     });
 
