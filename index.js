@@ -809,6 +809,79 @@ async function run() {
       }
     });
 
+    app.post("/dinogame/play", async (req, res) => {
+      try {
+        const { email, score } = req.body;
+
+        if (!email || typeof score !== "number") {
+          return res.status(400).send({
+            success: false,
+            message: "Email and score are required",
+          });
+        }
+
+        const user = await usersCollection.findOne({ email });
+        if (!user) {
+          return res.status(404).send({
+            success: false,
+            message: "User not found",
+          });
+        }
+
+        const now = new Date();
+        const last = user.lastDinoPlay ? new Date(user.lastDinoPlay) : null;
+
+        let dailyPlaysUsed = user.dailyDinoPlaysUsed || 0;
+
+        // Reset daily plays if last play was previous day
+        if (!last || isNaN(last.getTime()) || now - last > 86400000) {
+          dailyPlaysUsed = 0;
+        }
+
+        // Limit per day: 3
+        if (dailyPlaysUsed >= 3) {
+          return res.status(403).send({
+            success: false,
+            message: "Daily Dino game limit reached",
+            dailyPlaysUsed,
+          });
+        }
+
+        // Calculate reward: 1 Taka per 1000 points
+        const reward = Math.floor(score / 1000);
+
+        // Update user in DB
+        await usersCollection.updateOne(
+          { email },
+          {
+            $set: {
+              lastDinoPlay: now,
+              dailyDinoPlaysUsed: dailyPlaysUsed + 1,
+            },
+            $inc: {
+              balance: reward,
+            },
+          }
+        );
+
+        const newUser = await usersCollection.findOne({ email });
+
+        res.send({
+          success: true,
+          reward,
+          newBalance: newUser.balance,
+          message: `You earned ${reward} Taka!`,
+          dailyPlaysUsed: dailyPlaysUsed + 1,
+        });
+      } catch (err) {
+        console.error("Dino Game Play Error:", err);
+        res.status(500).send({
+          success: false,
+          message: "Server error. Check logs.",
+        });
+      }
+    });
+
     // Withdraw request API (member side)
     app.post("/withdraw", verifyToken, async (req, res) => {
       try {
