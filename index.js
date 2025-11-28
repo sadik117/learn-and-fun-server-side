@@ -721,13 +721,15 @@ async function run() {
           (now - joinDate) / (1000 * 60 * 60 * 24)
         );
 
+        // ---------------------------
         //  LOCK SYSTEM CONTROL
-
+        // ---------------------------
         if (user.unlockDate && now > new Date(user.unlockDate)) {
           await usersCollection.updateOne(
             { email },
             { $set: { locked: true } }
           );
+
           return res.status(403).send({
             success: false,
             locked: true,
@@ -735,7 +737,7 @@ async function run() {
           });
         }
 
-        // Free for FIRST 3 days (Max 2 per day)
+        // First 3 days → 2 free plays per day
         if (daysSinceJoin < 3) {
           if (user.dailyFreePlaysUsed >= 2) {
             return res.status(403).send({
@@ -754,7 +756,7 @@ async function run() {
               });
             }
 
-            // Deduct token & Unlock for 25 days
+            // Deduct 4 tokens & unlock 25 days
             await usersCollection.updateOne(
               { email },
               {
@@ -768,9 +770,10 @@ async function run() {
           }
         }
 
+        // ---------------------------
         //  PLAY FREE LOGIC
-
-        let freePlaysLeft = user.freePlaysLeft ?? 10; // Default 10 free
+        // ---------------------------
+        let freePlaysLeft = user.freePlaysLeft ?? 0;
         let dailyFreePlaysUsed = user.dailyFreePlaysUsed ?? 0;
 
         if (freePlaysLeft <= 0) {
@@ -781,10 +784,10 @@ async function run() {
           });
         }
 
-        // Use a free play
+        // Deduct free play
         freePlaysLeft -= 1;
 
-        // Generate slots
+        // Slot items
         const slotItems = ["🍒", "🍋", "🍇", "🍊", "7️⃣", "⭐", "💎"];
         let slots = [
           slotItems[Math.floor(Math.random() * slotItems.length)],
@@ -792,7 +795,9 @@ async function run() {
           slotItems[Math.floor(Math.random() * slotItems.length)],
         ];
 
-        //  Win logic
+        // ---------------------------
+        //  WIN LOGIC
+        // ---------------------------
         let win = false;
         if (
           Math.random() < 0.4 ||
@@ -802,13 +807,24 @@ async function run() {
           slots = ["💎", "💎", "💎"];
         }
 
-        // Track daily limit
+        // ---------------------------
+        //  DAILY FREE PLAY RESET
+        // ---------------------------
         const last = user.lastFreePlay ? new Date(user.lastFreePlay) : null;
-        if (!last || now - last > 86400000) dailyFreePlaysUsed = 0;
+        if (!last || now - last > 86400000) {
+          dailyFreePlaysUsed = 0; // reset daily count
+        }
 
         dailyFreePlaysUsed += 1;
 
-        // Update DB
+        // ---------------------------
+        //  WIN REWARD (20 TAKA)
+        // ---------------------------
+        const reward = win ? 20 : 0;
+
+        // ---------------------------
+        // 📌 UPDATE USER DATA
+        // ---------------------------
         await usersCollection.updateOne(
           { email },
           {
@@ -819,14 +835,21 @@ async function run() {
               lastFreePlay: now,
               playsCount: (user.playsCount || 0) + 1,
             },
+            ...(win && { $inc: { balance: reward } }),
           }
         );
 
+        // ---------------------------
+        // 📤 SEND RESPONSE
+        // ---------------------------
         res.send({
           success: true,
           win,
+          reward,
           slots,
-          message: win ? "You WON!" : "Try again!",
+          message: win
+            ? `You WON! +${reward} Taka added to your balance`
+            : "Try again!",
           freePlaysLeft,
         });
       } catch (err) {
