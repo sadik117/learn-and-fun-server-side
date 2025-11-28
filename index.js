@@ -49,6 +49,7 @@ app.use(cors(corsOptions));
 // app.options("*", cors(corsOptions));
 
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
 const otpStore = new Map();
 
@@ -708,6 +709,7 @@ async function run() {
         console.log("PLAY FREE API HIT");
 
         const { email } = req.body;
+        console.log(email);
 
         if (!email) {
           return res.status(400).send({
