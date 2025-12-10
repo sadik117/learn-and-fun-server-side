@@ -435,7 +435,7 @@ async function run() {
           referrer,
         });
       } catch (err) {
-        console.error("GET /my-profile error:", err);
+        // console.error("GET /my-profile error:", err);
         res.status(500).send({ error: "Internal Server Error" });
       }
     });
@@ -537,19 +537,20 @@ async function run() {
             async (req, res) => {
               try {
                 const { email } = req.params;
+                if (!email)
+                  return res
+                    .status(400)
+                    .json({ success: false, message: "Email required" });
 
-                // Fetch the user once (avoid multiple queries)
                 const user = await usersCollection.findOne({ email });
-                if (!user) {
-                  return res.status(404).json({
-                    success: false,
-                    message: " User not found",
-                  });
-                }
+                if (!user)
+                  return res
+                    .status(404)
+                    .json({ success: false, message: "User not found" });
 
                 const joinDate = new Date();
                 const unlockDate = new Date(joinDate);
-                unlockDate.setDate(unlockDate.getDate() + 3); // cleaner unlock update
+                unlockDate.setDate(unlockDate.getDate() + 3);
 
                 const updateData = {
                   role: "member",
@@ -571,26 +572,29 @@ async function run() {
                   { $set: updateData }
                 );
 
-                // Referral Bonus: Only if valid and actual user referred
+                // Reward referrer (if exists)
                 if (user.referredBy) {
                   await usersCollection.updateOne(
                     { referralCode: user.referredBy },
                     {
                       $inc: { freePlaysLeft: 2, tokens: 1 },
-                      $set: { lastReferralRewardDate: new Date() }, // track reward date
+                      $set: { lastReferralRewardDate: new Date() },
                     }
                   );
                 }
-                res.json({
+
+                return res.json({
                   success: true,
                   message: "User approved successfully and promoted to member!",
                 });
               } catch (error) {
                 console.error("APPROVAL ERROR:", error);
-                res.status(500).json({
-                  success: false,
-                  message: "Server error, please try again later",
-                });
+                return res
+                  .status(500)
+                  .json({
+                    success: false,
+                    message: "Server error, please try again later",
+                  });
               }
             }
           );
@@ -758,37 +762,34 @@ async function run() {
       }
     });
 
-    // POST /lottery/play
+    // Lottery Free Play (fixed to return useful data and decrement freePlaysLeft)
     app.post("/lottery/play-free", async (req, res) => {
       try {
         const { email } = req.body;
-        // console.log(email);
 
         if (!email) {
-          return res.status(400).send({
-            success: false,
-            message: "Email is required",
-          });
+          return res
+            .status(400)
+            .send({ success: false, message: "Email is required" });
         }
 
-        // Get user
         const user = await usersCollection.findOne({ email });
-
         if (!user) {
-          return res.status(404).send({
-            success: false,
-            message: "User not found",
-          });
+          return res
+            .status(404)
+            .send({ success: false, message: "User not found" });
         }
 
-        // Time logic
         const now = new Date();
         const last = user.lastFreePlay ? new Date(user.lastFreePlay) : null;
-
         let dailyFreePlaysUsed = user.dailyFreePlaysUsed || 0;
 
-        // Reset daily plays at 24 hours
-        if (!last || isNaN(last.getTime()) || now - last > 86400000) {
+        // Reset daily plays if last play was >24h ago
+        if (
+          !last ||
+          isNaN(last.getTime()) ||
+          now - last > 24 * 60 * 60 * 1000
+        ) {
           dailyFreePlaysUsed = 0;
         }
 
@@ -797,12 +798,12 @@ async function run() {
           return res.send({
             success: false,
             message: "Daily free play limit reached",
+            dailyFreePlaysUsed,
           });
         }
 
         // Slot machine icons
-        const icons = ["🍒", "🍋", "⭐", "💎"];
-
+        const icons = ["🍒", "🍋", "⭐", "💎", "🍇", "🍊", "7️⃣"];
         let slots = [
           icons[Math.floor(Math.random() * icons.length)],
           icons[Math.floor(Math.random() * icons.length)],
@@ -811,157 +812,139 @@ async function run() {
 
         // WIN logic
         let win = false;
-
         if (
-          Math.random() < 0.4 || // 40% chance
+          Math.random() < 0.4 ||
           (slots[0] === slots[1] && slots[1] === slots[2])
         ) {
           win = true;
           slots = ["💎", "💎", "💎"];
         }
 
-        // Reward 20 taka
         const reward = win ? 20 : 0;
 
-        // Update user
-        await usersCollection.updateOne(
-          { email },
-          {
-            $set: {
-              freePlaysLeft: user.freePlaysLeft, // no deduction for free play
-              slots,
-              dailyFreePlaysUsed: dailyFreePlaysUsed + 1,
-              lastFreePlay: now,
-              playsCount: Number(user.playsCount || 0) + 1,
-            },
-          }
-        );
+        // Update user: increment plays counters and optionally decrement freePlaysLeft
+        const updates = {
+          $set: {
+            dailyFreePlaysUsed: dailyFreePlaysUsed + 1,
+            lastFreePlay: now,
+            lastPlayDate: now,
+            playsCount: Number(user.playsCount || 0) + 1,
+            slots,
+          },
+        };
+
+        // If user has freePlaysLeft property and it's > 0, decrement it (members)
+        if (typeof user.freePlaysLeft === "number" && user.freePlaysLeft > 0) {
+          updates.$inc = { ...(updates.$inc || {}), freePlaysLeft: -1 };
+        }
 
         // If win → add balance
         if (win) {
-          await usersCollection.updateOne(
-            { email },
-            { $inc: { balance: reward } }
-          );
+          updates.$inc = { ...(updates.$inc || {}), balance: reward };
         }
+
+        await usersCollection.updateOne({ email }, updates);
+
+        // Fetch updated user to return accurate values
+        const updatedUser = await usersCollection.findOne(
+          { email },
+          { projection: { balance: 1, freePlaysLeft: 1 } }
+        );
 
         return res.send({
           success: true,
           win,
           reward,
           slots,
-          newBalance: user.balance + reward,
+          freePlaysLeft: updatedUser.freePlaysLeft ?? null,
+          newBalance: updatedUser.balance ?? user.balance ?? 0,
           message: win ? `You WIN! +${reward} Taka added` : "Try again!",
         });
       } catch (err) {
         console.error("PLAY FREE ERROR:", err);
-        res.status(500).send({
-          success: false,
-          message: "Server error. Check logs.",
-        });
+        res
+          .status(500)
+          .send({ success: false, message: "Server error. Check logs." });
       }
     });
 
+    // DINO Play (ensure returns newBalance + dailyPlaysUsed)
     app.post("/dinogame/play", async (req, res) => {
-  try {
-    const { email, score } = req.body;
+      try {
+        const { email, score } = req.body;
 
-    // -----------------------------
-    // Validate input
-    // -----------------------------
-    if (!email || typeof score !== "number") {
-      return res.status(400).send({
-        success: false,
-        message: "Email and score are required",
-      });
-    }
+        if (!email || typeof score !== "number") {
+          return res
+            .status(400)
+            .send({ success: false, message: "Email and score are required" });
+        }
 
-    // -----------------------------
-    // Fetch User
-    // -----------------------------
-    const user = await usersCollection.findOne({ email });
-    if (!user) {
-      return res.status(404).send({
-        success: false,
-        message: "User not found",
-      });
-    }
+        const user = await usersCollection.findOne({ email });
+        if (!user) {
+          return res
+            .status(404)
+            .send({ success: false, message: "User not found" });
+        }
 
-    const now = new Date();
+        const now = new Date();
 
-    // ----------------------------------------------------
-    // 1️⃣  CHECK IF USER HAS ACTIVE DINO ACCESS WINDOW
-    // ----------------------------------------------------
-    if (!user.unlockDate || new Date(user.unlockDate) < now) {
-      return res.status(403).send({
-        success: false,
-        message:
-          "Your Dino game access has expired. Refer a friend to unlock 3 more days!",
-      });
-    }
+        // access window check (unlockDate must be in future)
+        if (!user.unlockDate || new Date(user.unlockDate) < now) {
+          return res.status(403).send({
+            success: false,
+            message:
+              "Your Dino game access has expired. Refer a friend to unlock 3 more days!",
+          });
+        }
 
-    // ----------------------------------------------------
-    // 2️⃣  DAILY PLAY LIMIT (3 PER DAY)
-    // ----------------------------------------------------
-    const lastPlay = user.lastDinoPlay ? new Date(user.lastDinoPlay) : null;
-    let dailyPlaysUsed = user.dailyDinoPlaysUsed || 0;
+        // daily play limit (3)
+        const lastPlay = user.lastDinoPlay ? new Date(user.lastDinoPlay) : null;
+        let dailyPlaysUsed = user.dailyDinoPlaysUsed || 0;
+        if (
+          !lastPlay ||
+          isNaN(lastPlay.getTime()) ||
+          now - lastPlay > 24 * 60 * 60 * 1000
+        ) {
+          dailyPlaysUsed = 0;
+        }
+        if (dailyPlaysUsed >= 3) {
+          return res.status(403).send({
+            success: false,
+            message: "Daily Dino game limit reached",
+            dailyPlaysUsed,
+          });
+        }
 
-    // Reset counter if last play was not today
-    if (!lastPlay || now - lastPlay > 24 * 60 * 60 * 1000) {
-      dailyPlaysUsed = 0;
-    }
+        const reward = Math.floor(score / 1000); // 1 Taka per 1000 points
 
-    if (dailyPlaysUsed >= 3) {
-      return res.status(403).send({
-        success: false,
-        message: "Daily Dino game limit reached",
-        dailyPlaysUsed,
-      });
-    }
+        const updateResult = await usersCollection.updateOne(
+          { email },
+          {
+            $set: { lastDinoPlay: now, dailyDinoPlaysUsed: dailyPlaysUsed + 1 },
+            $inc: { balance: reward },
+          }
+        );
 
-    // ----------------------------------------------------
-    // 3️⃣  CALCULATE REWARD
-    // ----------------------------------------------------
-    const reward = Math.floor(score / 1000); // 1 Taka per 1000 points
+        const updatedUser = await usersCollection.findOne(
+          { email },
+          { projection: { balance: 1, dailyDinoPlaysUsed: 1, unlockDate: 1 } }
+        );
 
-    // ----------------------------------------------------
-    // 4️⃣  UPDATE USER
-    // ----------------------------------------------------
-    await usersCollection.updateOne(
-      { email },
-      {
-        $set: {
-          lastDinoPlay: now,
-          dailyDinoPlaysUsed: dailyPlaysUsed + 1,
-        },
-        $inc: {
-          balance: reward,
-        },
+        return res.send({
+          success: true,
+          reward,
+          newBalance: updatedUser.balance ?? 0,
+          dailyPlaysUsed: updatedUser.dailyDinoPlaysUsed ?? dailyPlaysUsed + 1,
+          message: `You earned ${reward} Taka!`,
+          unlockDate: updatedUser.unlockDate,
+        });
+      } catch (err) {
+        console.error("DINO PLAY ERROR:", err);
+        res
+          .status(500)
+          .send({ success: false, message: "Server error. Check logs." });
       }
-    );
-
-    const updatedUser = await usersCollection.findOne({ email });
-
-    // ----------------------------------------------------
-    // 5️⃣  SEND RESPONSE
-    // ----------------------------------------------------
-    res.send({
-      success: true,
-      reward,
-      newBalance: updatedUser.balance,
-      dailyPlaysUsed: dailyPlaysUsed + 1,
-      message: `You earned ${reward} Taka!`,
-      unlockDate: updatedUser.unlockDate, // remaining days info
     });
-  } catch (err) {
-    console.error("DINO PLAY ERROR:", err);
-    res.status(500).send({
-      success: false,
-      message: "Server error. Check logs.",
-    });
-  }
-});
-
 
     // Withdraw request API (member side)
     app.post("/withdraw", verifyToken, async (req, res) => {
