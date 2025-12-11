@@ -261,6 +261,26 @@ async function run() {
         }
       }
 
+      // Reward the inviter immediately on successful referral signup:
+      // - give 1 token
+      // - extend Dino access (unlockDate) by 3 days from now
+      if (referredBy) {
+        const inviter = await usersCollection.findOne({ referralCode: referredBy });
+        if (inviter) {
+          const now = new Date();
+          const unlockDate = new Date(now);
+          unlockDate.setDate(unlockDate.getDate() + 3);
+
+          await usersCollection.updateOne(
+            { referralCode: referredBy },
+            {
+              $inc: { tokens: 1 },
+              $set: { unlockDate, lastReferralRewardDate: now },
+            }
+          );
+        }
+      }
+
       const token = jwt.sign({ email }, jwtSecret, { expiresIn: "3d" });
 
       res.status(201).send({
@@ -574,11 +594,15 @@ async function run() {
 
                 // Reward referrer (if exists)
                 if (user.referredBy) {
+                  const now = new Date();
+                  const unlockDate = new Date(now);
+                  unlockDate.setDate(unlockDate.getDate() + 3);
+
                   await usersCollection.updateOne(
                     { referralCode: user.referredBy },
                     {
                       $inc: { freePlaysLeft: 2, tokens: 1 },
-                      $set: { lastReferralRewardDate: new Date() },
+                      $set: { lastReferralRewardDate: now, unlockDate },
                     }
                   );
                 }
@@ -780,7 +804,18 @@ async function run() {
             .send({ success: false, message: "User not found" });
         }
 
+       
+        // If an unlockDate is used to gate access (same logic as /dinogame/play),
+        // require unlockDate to be in the future.
         const now = new Date();
+        if (!user.unlockDate || new Date(user.unlockDate) < now) {
+          return res.status(403).send({
+            success: false,
+            message:
+              "Your free-play access has expired. Refer a friend to unlock 3 more days!",
+          });
+        }
+
         const last = user.lastFreePlay ? new Date(user.lastFreePlay) : null;
         let dailyFreePlaysUsed = user.dailyFreePlaysUsed || 0;
 
@@ -917,18 +952,21 @@ async function run() {
 
         const reward = Math.floor(score / 1000); // 1 Taka per 1000 points
 
-        const updateResult = await usersCollection.updateOne(
+        // Atomically update and return the new document in one call to avoid
+        // an extra round-trip and race conditions.
+        const result = await usersCollection.findOneAndUpdate(
           { email },
           {
             $set: { lastDinoPlay: now, dailyDinoPlaysUsed: dailyPlaysUsed + 1 },
             $inc: { balance: reward },
+          },
+          {
+            returnDocument: "after", // return the document after update
+            projection: { balance: 1, dailyDinoPlaysUsed: 1, unlockDate: 1 },
           }
         );
 
-        const updatedUser = await usersCollection.findOne(
-          { email },
-          { projection: { balance: 1, dailyDinoPlaysUsed: 1, unlockDate: 1 } }
-        );
+        const updatedUser = result?.value || { balance: 0, dailyDinoPlaysUsed: dailyPlaysUsed + 1 };
 
         return res.send({
           success: true,
@@ -953,7 +991,7 @@ async function run() {
         const { amount, phone, method } = req.body;
 
         if (!email) return res.status(401).json({ message: "Unauthorized" });
-        if (amount <= 0)
+        if (amount <= 20)
           return res.status(400).json({ message: "Invalid amount" });
         if (!phone || phone.length < 11) {
           return res
