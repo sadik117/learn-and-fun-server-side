@@ -259,7 +259,7 @@ async function run() {
             { $push: { teamMembers: result.insertedId } }
           );
         }
-      } 
+      }
 
       const token = jwt.sign({ email }, jwtSecret, { expiresIn: "3d" });
 
@@ -498,13 +498,19 @@ async function run() {
       async (req, res) => {
         try {
           const { email } = req.params;
+          if (!email) {
+            return res.status(400).json({
+              success: false,
+              message: "Email required",
+            });
+          }
 
-          // Fetch the user once (avoid multiple queries)
+          // Fetch user
           const user = await usersCollection.findOne({ email });
           if (!user) {
             return res.status(404).json({
               success: false,
-              message: " User not found",
+              message: "User not found",
             });
           }
 
@@ -529,81 +535,25 @@ async function run() {
           // Approve user
           await usersCollection.updateOne({ email }, { $set: updateData });
 
-          // Referral Bonus: Only if valid and actual user referred
-          app.patch(
-            "/pending-users/:email/approve",
-            verifyToken,
-            verifyAdmin,
-            async (req, res) => {
-              try {
-                const { email } = req.params;
-                if (!email)
-                  return res
-                    .status(400)
-                    .json({ success: false, message: "Email required" });
+          //  Reward referrer
+          if (user.referredBy) {
+            const referrerResult = await usersCollection.updateOne(
+              { referralCode: user.referredBy },
+              { $inc: { tokens: 1 } }
+            );
 
-                const user = await usersCollection.findOne({ email });
-                if (!user)
-                  return res
-                    .status(404)
-                    .json({ success: false, message: "User not found" });
-
-                const joinDate = new Date();
-                const unlockDate = new Date(joinDate);
-                unlockDate.setDate(unlockDate.getDate() + 3);
-
-                const updateData = {
-                  role: "member",
-                  freePlaysLeft: 2,
-                  playsCount: 0,
-                  balance: 400,
-                  profits: 0,
-                  tokens: 0,
-                  joinDate,
-                  locked: false,
-                  dailyFreePlaysUsed: 0,
-                  lastFreePlay: null,
-                  unlockDate,
-                };
-
-                // Approve user
-                await usersCollection.updateOne(
-                  { email },
-                  { $set: updateData }
-                );
-
-                // Reward referrer (if exists)
-                if (user.referredBy) {
-                  
-                  await usersCollection.updateOne(
-                    { referralCode: user.referredBy },
-                    {
-                      $inc: { tokens: 1 }, 
-                    }
-                  )
-                }
-                return res.json({
-                  success: true,
-                  message: "User approved successfully and promoted to member!",
-                });
-              } catch (error) {
-                console.error("APPROVAL ERROR:", error);
-                return res
-                  .status(500)
-                  .json({
-                    success: false,
-                    message: "Server error, please try again later",
-                  });
-              }
+            if (referrerResult.matchedCount === 0) {
+              console.warn("Referrer not found for code:", user.referredBy);
             }
-          );
-          res.json({
+          }
+
+          return res.json({
             success: true,
-            message: "User approved successfully and promoted to member!",
+            message: "User approved successfully and referrer rewarded",
           });
         } catch (error) {
           console.error("APPROVAL ERROR:", error);
-          res.status(500).json({
+          return res.status(500).json({
             success: false,
             message: "Server error, please try again later",
           });
@@ -778,7 +728,6 @@ async function run() {
             .send({ success: false, message: "User not found" });
         }
 
-       
         // If an unlockDate is used to gate access (same logic as /dinogame/play),
         // require unlockDate to be in the future.
         const now = new Date();
@@ -849,7 +798,11 @@ async function run() {
 
         // If win → add balance
         if (win) {
-          updates.$inc = { ...(updates.$inc || {}), balance: reward, profits: reward };
+          updates.$inc = {
+            ...(updates.$inc || {}),
+            balance: reward,
+            profits: reward,
+          };
         }
 
         await usersCollection.updateOne({ email }, updates);
@@ -940,7 +893,10 @@ async function run() {
           }
         );
 
-        const updatedUser = result?.value || { balance: 0, dailyDinoPlaysUsed: dailyPlaysUsed + 1 };
+        const updatedUser = result?.value || {
+          balance: 0,
+          dailyDinoPlaysUsed: dailyPlaysUsed + 1,
+        };
 
         return res.send({
           success: true,
