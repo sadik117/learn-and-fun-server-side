@@ -259,27 +259,7 @@ async function run() {
             { $push: { teamMembers: result.insertedId } }
           );
         }
-      }
-
-      // Reward the inviter immediately on successful referral signup:
-      // - give 1 token
-      // - extend Dino access (unlockDate) by 3 days from now
-      if (referredBy) {
-        const inviter = await usersCollection.findOne({ referralCode: referredBy });
-        if (inviter) {
-          const now = new Date();
-          const unlockDate = new Date(now);
-          unlockDate.setDate(unlockDate.getDate() + 3);
-
-          await usersCollection.updateOne(
-            { referralCode: referredBy },
-            {
-              $inc: { tokens: 1 },
-              $set: { unlockDate, lastReferralRewardDate: now },
-            }
-          );
-        }
-      }
+      } 
 
       const token = jwt.sign({ email }, jwtSecret, { expiresIn: "3d" });
 
@@ -530,7 +510,7 @@ async function run() {
 
           const joinDate = new Date();
           const unlockDate = new Date(joinDate);
-          unlockDate.setDate(unlockDate.getDate() + 3); // cleaner unlock update
+          unlockDate.setDate(unlockDate.getDate() + 3);
 
           const updateData = {
             role: "member",
@@ -594,19 +574,14 @@ async function run() {
 
                 // Reward referrer (if exists)
                 if (user.referredBy) {
-                  const now = new Date();
-                  const unlockDate = new Date(now);
-                  unlockDate.setDate(unlockDate.getDate() + 3);
-
+                  
                   await usersCollection.updateOne(
                     { referralCode: user.referredBy },
                     {
-                      $inc: { freePlaysLeft: 2, tokens: 1 },
-                      $set: { lastReferralRewardDate: now, unlockDate },
+                      $inc: { tokens: 1 }, 
                     }
-                  );
+                  )
                 }
-
                 return res.json({
                   success: true,
                   message: "User approved successfully and promoted to member!",
@@ -622,7 +597,6 @@ async function run() {
               }
             }
           );
-
           res.json({
             success: true,
             message: "User approved successfully and promoted to member!",
@@ -812,7 +786,7 @@ async function run() {
           return res.status(403).send({
             success: false,
             message:
-              "Your free-play access has expired. Refer a friend to unlock 3 more days!",
+              "Your free-play access has expired. Get 4 Tokens By Referring Friends to unlock 24 more days!",
           });
         }
 
@@ -875,7 +849,7 @@ async function run() {
 
         // If win → add balance
         if (win) {
-          updates.$inc = { ...(updates.$inc || {}), balance: reward };
+          updates.$inc = { ...(updates.$inc || {}), balance: reward, profits: reward };
         }
 
         await usersCollection.updateOne({ email }, updates);
@@ -928,7 +902,7 @@ async function run() {
           return res.status(403).send({
             success: false,
             message:
-              "Your Dino game access has expired. Refer a friend to unlock 3 more days!",
+              "Your Dino game access has expired. Get 4 Tokens By Referring Friends to unlock 24 more days!",
           });
         }
 
@@ -958,7 +932,7 @@ async function run() {
           { email },
           {
             $set: { lastDinoPlay: now, dailyDinoPlaysUsed: dailyPlaysUsed + 1 },
-            $inc: { balance: reward },
+            $inc: { balance: reward, profits: reward },
           },
           {
             returnDocument: "after", // return the document after update
