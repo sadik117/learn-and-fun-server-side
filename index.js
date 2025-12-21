@@ -711,14 +711,14 @@ async function run() {
     });
 
     // Lottery Free Play (fixed to return useful data and decrement freePlaysLeft)
+
     app.post("/lottery/play-free", async (req, res) => {
       try {
         const { email } = req.body;
-
         if (!email) {
           return res
             .status(400)
-            .send({ success: false, message: "Email is required" });
+            .send({ success: false, message: "Email required" });
         }
 
         const user = await usersCollection.findOne({ email });
@@ -728,95 +728,68 @@ async function run() {
             .send({ success: false, message: "User not found" });
         }
 
-        // If an unlockDate is used to gate access (same logic as /dinogame/play),
-        // require unlockDate to be in the future.
         const now = new Date();
+
+        // 🔐 unlock check
         if (!user.unlockDate || new Date(user.unlockDate) < now) {
           return res.status(403).send({
             success: false,
             message:
-              "Your free-play access has expired. Get 4 Tokens By Referring Friends to unlock 14 more days!",
+              "Your free-play access has expired. Refer friends to unlock again!",
           });
         }
 
+        // 🎮 daily reset
         const last = user.lastFreePlay ? new Date(user.lastFreePlay) : null;
-        let dailyFreePlaysUsed = user.dailyFreePlaysUsed || 0;
+        let used = user.dailyFreePlaysUsed || 0;
 
-        // Reset daily plays if last play was >24h ago
-        if (
-          !last ||
-          isNaN(last.getTime()) ||
-          now - last > 24 * 60 * 60 * 1000
-        ) {
-          dailyFreePlaysUsed = 0;
+        if (!last || now - last > 24 * 60 * 60 * 1000) {
+          used = 0;
         }
 
-        // Limit per day: 3
-        if (dailyFreePlaysUsed >= 3) {
-          return res.send({
+        if (used >= 3) {
+          return res.status(403).send({
             success: false,
             message: "Daily free play limit reached",
-            dailyFreePlaysUsed,
+            remainingToday: 0,
           });
         }
 
-        // Slot machine icons
+        // 🎰 slots
         const icons = ["🍒", "🍋", "⭐", "💎", "🍇", "🍊", "7️⃣"];
-        let slots = [
-          icons[Math.floor(Math.random() * icons.length)],
-          icons[Math.floor(Math.random() * icons.length)],
-          icons[Math.floor(Math.random() * icons.length)],
-        ];
+        let slots = Array.from(
+          { length: 3 },
+          () => icons[Math.floor(Math.random() * icons.length)]
+        );
 
-        // WIN logic
-        let win = false;
-        if (
+        let win =
           Math.random() < 0.4 ||
-          (slots[0] === slots[1] && slots[1] === slots[2])
-        ) {
-          win = true;
-          slots = ["💎", "💎", "💎"];
-        }
+          (slots[0] === slots[1] && slots[1] === slots[2]);
+
+        if (win) slots = ["💎", "💎", "💎"];
 
         const reward = win ? 20 : 0;
 
-        // Update user: increment plays counters and optionally decrement freePlaysLeft
-        const updates = {
-          $set: {
-            dailyFreePlaysUsed: dailyFreePlaysUsed + 1,
-            lastFreePlay: now,
-            lastPlayDate: now,
-            playsCount: Number(user.playsCount || 0) + 1,
-            slots,
-          },
-        };
-
-        // If user has freePlaysLeft property and it's > 0, decrement it (members)
-        if (typeof user.freePlaysLeft === "number" && user.freePlaysLeft > 0) {
-          updates.$inc = { ...(updates.$inc || {}), freePlaysLeft: -1 };
-        }
-
-        // If win → add balance
-        if (win) {
-          updates.$inc = {
-            ...(updates.$inc || {}),
-            balance: reward,
-            profits: reward,
-          };
-        }
-
-        await usersCollection.updateOne({ email }, updates);
-
-        // Fetch updated user to return accurate values
-        const updatedUser = await usersCollection.findOne(
+        const result = await usersCollection.findOneAndUpdate(
           { email },
-          { projection: { balance: 1, freePlaysLeft: 1 } }
+          {
+            $set: {
+              lastFreePlay: now,
+              dailyFreePlaysUsed: used + 1,
+              lastPlayDate: now,
+              slots,
+            },
+            $inc: win ? { balance: reward, profits: reward } : {},
+          },
+          {
+            returnDocument: "after",
+            projection: { balance: 1, dailyFreePlaysUsed: 1 },
+          }
         );
 
         const nextResetAt = lastPlay
           ? new Date(new Date(lastPlay).getTime() + 24 * 60 * 60 * 1000)
           : null;
-        
 
         return res.send({
           success: true,
@@ -824,15 +797,13 @@ async function run() {
           reward,
           slots,
           nextResetAt,
-          freePlaysLeft: updatedUser.freePlaysLeft ?? null,
-          newBalance: updatedUser.balance ?? user.balance ?? 0,
+          newBalance: result.value.balance,
+          remainingToday: 3 - result.value.dailyFreePlaysUsed,
           message: win ? `You WIN! +${reward} Taka added` : "Try again!",
         });
       } catch (err) {
-        console.error("PLAY FREE ERROR:", err);
-        res
-          .status(500)
-          .send({ success: false, message: "Server error. Check logs." });
+        console.error(err);
+        res.status(500).send({ success: false, message: "Server error" });
       }
     });
 
