@@ -735,7 +735,7 @@ async function run() {
           return res.status(403).send({
             success: false,
             message:
-              "Your free-play access has expired. Get 4 Tokens By Referring Friends to unlock 24 more days!",
+              "Your free-play access has expired. Get 4 Tokens By Referring Friends to unlock 14 more days!",
           });
         }
 
@@ -855,7 +855,7 @@ async function run() {
           return res.status(403).send({
             success: false,
             message:
-              "Your Dino game access has expired. Get 4 Tokens By Referring Friends to unlock 24 more days!",
+              "Your Dino game access has expired. Get 4 Tokens By Referring Friends to unlock 14 more days!",
           });
         }
 
@@ -911,6 +911,63 @@ async function run() {
         res
           .status(500)
           .send({ success: false, message: "Server error. Check logs." });
+      }
+    });
+
+
+    // Unlock games API
+    app.post("/games/unlock", async (req, res) => {
+      try {
+        const { email } = req.body;
+        const COST = 4;
+        const DAYS = 14;
+
+        if (!email) {
+          return res
+            .status(400)
+            .send({ success: false, message: "Email required" });
+        }
+
+        const user = await usersCollection.findOne({ email });
+        if (!user) {
+          return res
+            .status(404)
+            .send({ success: false, message: "User not found" });
+        }
+
+        if ((user.tokens || 0) < COST) {
+          return res.status(403).send({
+            success: false,
+            message: "Not enough tokens (4 required)",
+          });
+        }
+
+        const now = new Date();
+        const baseDate =
+          user.unlockDate && new Date(user.unlockDate) > now
+            ? new Date(user.unlockDate)
+            : now;
+
+        const newUnlockDate = new Date(
+          baseDate.getTime() + DAYS * 24 * 60 * 60 * 1000
+        );
+
+        await usersCollection.updateOne(
+          { email },
+          {
+            $inc: { tokens: -COST },
+            $set: { unlockDate: newUnlockDate },
+          }
+        );
+
+        return res.send({
+          success: true,
+          unlockDate: newUnlockDate,
+          message: "Games unlocked for 14 days!",
+        });
+      } catch (err) {
+        console.error("UNLOCK ERROR:", err);
+        res.status(500).send({ success: false, message: "Server error" });
       }
     });
 
