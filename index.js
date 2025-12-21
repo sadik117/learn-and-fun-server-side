@@ -400,13 +400,18 @@ async function run() {
     app.get("/my-profile", verifyToken, async (req, res) => {
       try {
         const email = (req.user?.email || "").trim().toLowerCase();
-        if (!email)
+        if (!email) {
           return res.status(400).send({ error: "Email missing in token" });
+        }
 
         const user = await usersCollection.findOne({ email });
-        if (!user) return res.status(404).send({ error: "User not found" });
+        if (!user) {
+          return res.status(404).send({ error: "User not found" });
+        }
 
-        // Ensure referralCode exists (generate once if missing)
+        /* --------------------------------------------------
+       Ensure referralCode exists (one-time)
+    -------------------------------------------------- */
         let ensuredReferralCode = user.referralCode;
         if (!ensuredReferralCode) {
           ensuredReferralCode = generateReferralCode();
@@ -416,7 +421,9 @@ async function run() {
           );
         }
 
-        // Populate referrer details if referredBy exists
+        /* --------------------------------------------------
+       Referrer info
+    -------------------------------------------------- */
         let referrer = null;
         if (user.referredBy) {
           referrer = await usersCollection.findOne(
@@ -425,17 +432,75 @@ async function run() {
           );
         }
 
-        // Build a safe response (avoid mutating DB doc)
+        /* --------------------------------------------------
+       TIME + UNLOCK STATUS
+    -------------------------------------------------- */
+        const now = new Date();
+        const isUnlocked = user.unlockDate && new Date(user.unlockDate) > now;
+
+        /* --------------------------------------------------
+       DAILY RESET (UTC MIDNIGHT)
+    -------------------------------------------------- */
+        const todayUTC = new Date(
+          Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())
+        );
+
+        /* ---------- LOTTERY DAILY PLAYS ---------- */
+        let lotteryUsed = user.dailyFreePlaysUsed || 0;
+        const lastLotteryPlay = user.lastFreePlay
+          ? new Date(user.lastFreePlay)
+          : null;
+
+        if (!lastLotteryPlay || lastLotteryPlay < todayUTC) {
+          lotteryUsed = 0;
+        }
+
+        const lotteryRemainingPlays = Math.max(0, 3 - lotteryUsed);
+
+        /* ---------- DINO DAILY PLAYS ---------- */
+        let dinoUsed = user.dailyDinoPlaysUsed || 0;
+        const lastDinoPlay = user.lastDinoPlay
+          ? new Date(user.lastDinoPlay)
+          : null;
+
+        if (!lastDinoPlay || lastDinoPlay < todayUTC) {
+          dinoUsed = 0;
+        }
+
+        const dinoRemainingPlays = Math.max(0, 3 - dinoUsed);
+
+        /* --------------------------------------------------
+       Build SAFE response (no DB mutation)
+    -------------------------------------------------- */
         const { password, _id, ...rest } = user;
 
         res.send({
           ...rest,
-          referralCode: ensuredReferralCode, // permanent main code
-          tokens: user.tokens ?? 0,
+
+          // core identity
+          email: user.email,
+          referralCode: ensuredReferralCode,
           referrer,
+
+          // balances
+          tokens: user.tokens ?? 0,
+          balance: user.balance ?? 0,
+          profits: user.profits ?? 0,
+
+          // unlock
+          unlockDate: user.unlockDate || null,
+          isUnlocked,
+
+          // lottery
+          dailyFreePlaysUsed: lotteryUsed,
+          remainingPlays: lotteryRemainingPlays,
+
+          // dino
+          dailyDinoPlaysUsed: dinoUsed,
+          remainingPlays: dinoRemainingPlays,
         });
       } catch (err) {
-        // console.error("GET /my-profile error:", err);
+        console.error("GET /my-profile error:", err);
         res.status(500).send({ error: "Internal Server Error" });
       }
     });
