@@ -813,11 +813,17 @@ async function run() {
           { projection: { balance: 1, freePlaysLeft: 1 } }
         );
 
+        const nextResetAt = lastPlay
+          ? new Date(new Date(lastPlay).getTime() + 24 * 60 * 60 * 1000)
+          : null;
+        
+
         return res.send({
           success: true,
           win,
           reward,
           slots,
+          nextResetAt,
           freePlaysLeft: updatedUser.freePlaysLeft ?? null,
           newBalance: updatedUser.balance ?? user.balance ?? 0,
           message: win ? `You WIN! +${reward} Taka added` : "Try again!",
@@ -850,70 +856,66 @@ async function run() {
 
         const now = new Date();
 
-        // access window check (unlockDate must be in future)
+        // 🔐 unlock check
         if (!user.unlockDate || new Date(user.unlockDate) < now) {
           return res.status(403).send({
             success: false,
             message:
-              "Your Dino game access has expired. Get 4 Tokens By Referring Friends to unlock 14 more days!",
+              "Your Dino game access has expired. Refer friends to unlock again!",
           });
         }
 
-        // daily play limit (3)
+        // 🎮 daily limit logic
         const lastPlay = user.lastDinoPlay ? new Date(user.lastDinoPlay) : null;
-        let dailyPlaysUsed = user.dailyDinoPlaysUsed || 0;
-        if (
-          !lastPlay ||
-          isNaN(lastPlay.getTime()) ||
-          now - lastPlay > 24 * 60 * 60 * 1000
-        ) {
-          dailyPlaysUsed = 0;
+        let used = user.dailyDinoPlaysUsed || 0;
+
+        if (!lastPlay || now - lastPlay > 24 * 60 * 60 * 1000) {
+          used = 0;
         }
-        if (dailyPlaysUsed >= 3) {
+
+        if (used >= 3) {
           return res.status(403).send({
             success: false,
             message: "Daily Dino game limit reached",
-            dailyPlaysUsed,
+            remainingToday: 0,
           });
         }
 
-        const reward = Math.floor(score / 1000); // 1 Taka per 1000 points
+        const reward = Math.floor(score / 1000); // 1 Taka per 1000 score
 
-        // Atomically update and return the new document in one call to avoid
-        // an extra round-trip and race conditions.
         const result = await usersCollection.findOneAndUpdate(
           { email },
           {
-            $set: { lastDinoPlay: now, dailyDinoPlaysUsed: dailyPlaysUsed + 1 },
-            $inc: { balance: reward, profits: reward },
+            $set: {
+              lastDinoPlay: now,
+              dailyDinoPlaysUsed: used + 1,
+            },
+            $inc: {
+              balance: reward,
+              profits: reward,
+            },
           },
           {
-            returnDocument: "after", // return the document after update
+            returnDocument: "after",
             projection: { balance: 1, dailyDinoPlaysUsed: 1, unlockDate: 1 },
           }
         );
 
-        const updatedUser = result?.value || {
-          balance: 0,
-          dailyDinoPlaysUsed: dailyPlaysUsed + 1,
-        };
+        const updatedUser = result.value;
 
         return res.send({
           success: true,
           reward,
-          newBalance: updatedUser.balance ?? 0,
-          dailyPlaysUsed: updatedUser.dailyDinoPlaysUsed ?? dailyPlaysUsed + 1,
+          newBalance: updatedUser.balance,
+          remainingToday: 3 - updatedUser.dailyDinoPlaysUsed,
           message: `You earned ${reward} Taka!`,
           unlockDate: updatedUser.unlockDate,
         });
       } catch (err) {
         console.error("DINO PLAY ERROR:", err);
-        res
-          .status(500)
-          .send({ success: false, message: "Server error. Check logs." });
+        res.status(500).send({ success: false, message: "Server error" });
       }
     });
-
 
     // Unlock games API
     app.post("/games/unlock", async (req, res) => {
