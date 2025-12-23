@@ -409,9 +409,7 @@ async function run() {
           return res.status(404).send({ error: "User not found" });
         }
 
-        /* --------------------------------------------------
-       Ensure referralCode exists (one-time)
-    -------------------------------------------------- */
+        /*  Ensure referralCode exists (one-time) */
         let ensuredReferralCode = user.referralCode;
         if (!ensuredReferralCode) {
           ensuredReferralCode = generateReferralCode();
@@ -421,9 +419,7 @@ async function run() {
           );
         }
 
-        /* --------------------------------------------------
-       Referrer info
-    -------------------------------------------------- */
+        /*  Referrer info */
         let referrer = null;
         if (user.referredBy) {
           referrer = await usersCollection.findOne(
@@ -432,15 +428,11 @@ async function run() {
           );
         }
 
-        /* --------------------------------------------------
-       TIME + UNLOCK STATUS
-    -------------------------------------------------- */
+        /* TIME + UNLOCK STATUS */
         const now = new Date();
         const isUnlocked = user.unlockDate && new Date(user.unlockDate) > now;
 
-        /* --------------------------------------------------
-       DAILY RESET (UTC MIDNIGHT)
-    -------------------------------------------------- */
+        /* --- DAILY RESET (UTC MIDNIGHT)--*/
         const todayUTC = new Date(
           Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())
         );
@@ -776,7 +768,7 @@ async function run() {
     });
 
     // Lottery Free Play (fixed to return useful data and decrement freePlaysLeft)
-    app.post("/lottery/play-free", async (req, res) => {
+    app.post("/lottery/play-free", verifyToken, async (req, res) => {
       try {
         const { email } = req.body;
         if (!email) return res.status(400).send({ success: false });
@@ -848,7 +840,7 @@ async function run() {
     });
 
     // DINO Play (ensure returns newBalance + dailyPlaysUsed)
-    app.post("/dinogame/play", async (req, res) => {
+    app.post("/dinogame/play",verifyToken, async (req, res) => {
       try {
         const { email, score } = req.body;
 
