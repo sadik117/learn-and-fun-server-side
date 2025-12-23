@@ -807,8 +807,9 @@ async function run() {
     // Lottery Free Play (fixed to return useful data and decrement freePlaysLeft)
     app.post("/lottery/play-free", verifyToken, async (req, res) => {
       try {
-        const { email } = req.body;
-        if (!email) return res.status(400).send({ success: false });
+        // Prefer authenticated email (from token) over body input
+        let email = (req.body && req.body.email) || req.user?.email;
+        if (!email) return res.status(400).send({ success: false, message: 'Email required' });
 
         const user = await usersCollection.findOne({ email });
         if (!user) return res.status(404).send({ success: false });
@@ -880,7 +881,9 @@ async function run() {
     // DINO Play (ensure returns newBalance + dailyPlaysUsed)
     app.post("/dinogame/play", verifyToken, async (req, res) => {
       try {
-        const { email, score } = req.body;
+        // Prefer authenticated email (from token) over body input
+        let email = (req.body && req.body.email) || req.user?.email;
+        const { score } = req.body;
 
         if (!email || typeof score !== "number" || score < 0) {
           return res.status(400).send({
@@ -976,14 +979,15 @@ async function run() {
     });
 
     // Unlock games API
-    app.post("/games/unlock", async (req, res) => {
-      const { email } = req.body;
+    // Require authentication and use the token email to avoid spoofing
+    app.post("/games/unlock", verifyToken, async (req, res) => {
+      const email = req.user?.email;
       const COST = 4;
       const DAYS = 14;
 
       const user = await usersCollection.findOne({ email });
       if (!user || user.tokens < COST) {
-        return res.status(403).send({ success: false });
+        return res.status(403).send({ success: false, message: 'Insufficient tokens or user not found' });
       }
 
       const now = new Date();
