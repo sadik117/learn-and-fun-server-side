@@ -7,6 +7,10 @@ const port = process.env.PORT || 3000;
 // const admin = require("firebase-admin");
 const nodemailer = require("nodemailer");
 const crypto = require("crypto");
+const cron = require("node-cron");
+
+// Daily reset cron job at UTC midnight
+// node-cron scheduled after DB connect (see below)
 
 // Comma-separated list in env (recommended on Vercel):
 // CLIENT_ORIGINS=https://learnandearned.netlify.app,http://localhost:5173
@@ -178,8 +182,37 @@ async function run() {
     // Start Mongo connection in background; register routes immediately
     client
       .connect()
-      .then(() => console.log("MongoDB connected"))
+      .then(() => {
+        console.log("MongoDB connected");
+
+        // Daily reset cron job at UTC midnight — schedule only after DB connect.
+        try {
+          cron.schedule(
+            "0 0 * * *",
+            async () => {
+              console.log("🔄 Daily game reset (UTC)");
+              try {
+                await usersCollection.updateMany(
+                  {},
+                  {
+                    $set: {
+                      dailyFreePlaysUsed: 0,
+                      dailyDinoPlaysUsed: 0,
+                    },
+                  }
+                );
+              } catch (err) {
+                console.error("Daily reset error:", err);
+              }
+            },
+            { timezone: "UTC" }
+          );
+        } catch (err) {
+          console.error("Failed to schedule daily reset cron:", err);
+        }
+      })
       .catch((e) => console.error("Mongo connect error:", e));
+
 
     // for missing users referral code and link setup
     async function addMissingReferralCodes() {
@@ -199,6 +232,14 @@ async function run() {
 
     function generateReferralCode() {
       return crypto.randomBytes(4).toString("hex").toUpperCase();
+    }
+
+    // Helper: normalized start of current day in UTC
+    function getTodayUTC() {
+      const now = new Date();
+      return new Date(
+        Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())
+      );
     }
 
     // Ensure all existing users have a referralCode, then index it for fast lookups
@@ -433,9 +474,7 @@ async function run() {
         const isUnlocked = user.unlockDate && new Date(user.unlockDate) > now;
 
         /* --- DAILY RESET (UTC MIDNIGHT)--*/
-        const todayUTC = new Date(
-          Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())
-        );
+        const todayUTC = getTodayUTC();
 
         /* ---------- LOTTERY DAILY PLAYS ---------- */
         let lotteryUsed = user.dailyFreePlaysUsed || 0;
@@ -461,9 +500,7 @@ async function run() {
 
         const dinoRemainingPlays = Math.max(0, 3 - dinoUsed);
 
-        /* --------------------------------------------------
-       Build SAFE response (no DB mutation)
-    -------------------------------------------------- */
+        /*  Build SAFE response (no DB mutation */
         const { password, _id, ...rest } = user;
 
         res.send({
@@ -485,11 +522,11 @@ async function run() {
 
           // lottery
           dailyFreePlaysUsed: lotteryUsed,
-          remainingPlays: lotteryRemainingPlays,
+          lotteryRemainingPlays: lotteryRemainingPlays,
 
           // dino
           dailyDinoPlaysUsed: dinoUsed,
-          remainingPlays: dinoRemainingPlays,
+          dinoRemainingPlays: dinoRemainingPlays,
         });
       } catch (err) {
         console.error("GET /my-profile error:", err);
@@ -786,11 +823,12 @@ async function run() {
           });
         }
 
-        // 🕒 Daily limit
+        // 🕒 Daily limit (use UTC day boundary helper)
+        const todayUTC = getTodayUTC();
         const last = user.lastFreePlay ? new Date(user.lastFreePlay) : null;
         let used = user.dailyFreePlaysUsed || 0;
 
-        if (!last || now - last > 24 * 60 * 60 * 1000) {
+        if (!last || last < todayUTC) {
           used = 0;
         }
 
@@ -840,7 +878,7 @@ async function run() {
     });
 
     // DINO Play (ensure returns newBalance + dailyPlaysUsed)
-    app.post("/dinogame/play",verifyToken, async (req, res) => {
+    app.post("/dinogame/play", verifyToken, async (req, res) => {
       try {
         const { email, score } = req.body;
 
@@ -870,9 +908,7 @@ async function run() {
         }
 
         // 🗓️ Daily reset (UTC midnight)
-        const todayUTC = new Date(
-          Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())
-        );
+        const todayUTC = getTodayUTC();
 
         let dailyUsed = user.dailyDinoPlaysUsed || 0;
         const lastPlay = user.lastDinoPlay ? new Date(user.lastDinoPlay) : null;
